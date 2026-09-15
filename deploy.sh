@@ -37,6 +37,9 @@ rsync -az --delete \
   --exclude '.DS_Store' --exclude 'docs' \
   "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
 
+echo "▶️  Готовлю папку базы (контейнер работает под uid 1000)…"
+ssh "${SSH_OPTS[@]}" "$SERVER" "mkdir -p '$REMOTE_DIR/data' && chown -R 1000:1000 '$REMOTE_DIR/data'"
+
 echo "▶️  Поднимаю контейнер…"
 ssh "${SSH_OPTS[@]}" "$SERVER" "cd '$REMOTE_DIR' && docker compose up -d --build && docker compose ps"
 

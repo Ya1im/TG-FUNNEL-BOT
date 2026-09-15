@@ -6,6 +6,8 @@ services:
     environment:
       TZ: Europe/Moscow
     volumes:
+      # Папка базы должна принадлежать uid 1000 — под ним работает процесс в контейнере:
+      #   mkdir -p data && chown -R 1000:1000 data
       - ./data:/app/data
     restart: unless-stopped
     logging:
