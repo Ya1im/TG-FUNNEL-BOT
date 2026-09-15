@@ -15,6 +15,8 @@ class Config:
     db_path: str
     messages_per_second: float
     tick_seconds: int
+    api_base: str = ""       # свой прокси Telegram API (например, Cloudflare Worker)
+    proxy: str = ""          # socks5:// или http:// прокси для выхода в Telegram
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -37,6 +39,8 @@ class Config:
             db_path=env.get("DB_PATH") or "data/bot.db",
             messages_per_second=float(env.get("MESSAGES_PER_SECOND") or 20),
             tick_seconds=int(env.get("TICK_SECONDS") or 60),
+            api_base=(env.get("TELEGRAM_API_BASE") or "").strip().rstrip("/"),
+            proxy=(env.get("TELEGRAM_PROXY") or "").strip(),
         )
 
     def is_admin(self, user_id: int) -> bool:

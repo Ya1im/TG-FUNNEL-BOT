@@ -158,6 +158,13 @@ bot/
 tests/               pytest
 ```
 
+## Если хостер блокирует Telegram
+
+Признак — бот виснет после «База подключена», а `curl https://api.telegram.org` с сервера
+отваливается по таймауту. Лечится одной строкой в `.env`: зеркало API на Cloudflare Worker
+(`TELEGRAM_API_BASE`) или SOCKS5-прокси на чистый сервер (`TELEGRAM_PROXY`).
+Подробности и готовые рецепты — в `docs/telegram-proxy.md`.
+
 ## Эксплуатация
 
 ```bash

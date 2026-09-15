@@ -6,6 +6,8 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -26,6 +28,18 @@ def build_dispatcher(deps: Deps) -> Dispatcher:
     dp["deps"] = deps
     dp.include_router(build_router())
     return dp
+
+
+def build_session(config: Config) -> AiohttpSession | None:
+    """Если хостер режет Telegram — ходим через прокси или зеркало API."""
+    kwargs: dict = {}
+    if config.proxy:
+        kwargs["proxy"] = config.proxy
+        log.info("Выход в Telegram через прокси %s", config.proxy.split("@")[-1])
+    if config.api_base:
+        kwargs["api"] = TelegramAPIServer.from_base(config.api_base)
+        log.info("Telegram API через зеркало %s", config.api_base)
+    return AiohttpSession(**kwargs) if kwargs else None
 
 
 async def set_commands(bot: Bot, config: Config) -> None:
@@ -55,7 +69,11 @@ async def main() -> None:
         log.error("%s", exc)
         log.error("Подсказка: cp .env.example .env и заполни BOT_TOKEN и ADMIN_IDS")
         return
-    bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(
+        config.bot_token,
+        session=build_session(config),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     db = await Database(config.db_path).connect()
 
     deps = Deps.build(config, db, bot)
