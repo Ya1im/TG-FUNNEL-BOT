@@ -322,3 +322,31 @@ async def test_channel_setup_reports_status_and_offers_force_save(stack, monkeyp
     await feed(dp, bot, callback=make_callback("a:set:force", user_id=ADMIN_ID))
     assert (await deps.settings.get("channel_id")) == "-1001234567890"
     assert (await deps.settings.get("channel_url")) == "https://t.me/mychan"
+
+
+async def test_channel_setup_rejects_non_channel(stack, monkeypatch):
+    """Присланный чат бота или личку не принимаем за канал."""
+    dp, bot, session, deps = stack
+    from aiogram.types import Chat as TgChat, ChatMemberMember as TgMember
+
+    async def fake_request(bot_, method, timeout=None):
+        session.requests.append(method)
+        name = type(method).__name__
+        if name == "GetChat":
+            return TgChat(id=BOT_USER.id, type="private", first_name="FunnelBot",
+                          username="funnel_bot")
+        if name == "GetMe":
+            return BOT_USER
+        if name == "GetChatMember":
+            return TgMember(user=BOT_USER, status="member")
+        return await MockSession.make_request(session, bot_, method, timeout)
+
+    monkeypatch.setattr(session, "make_request", fake_request)
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:set:channel", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("@funnel_bot", user_id=ADMIN_ID, message_id=60))
+
+    warning = [m for m in session.calls("SendMessage") if "Это не канал" in (m.text or "")]
+    assert warning, "должны отказать и объяснить"
+    assert (await deps.settings.get("channel_id")) == ""

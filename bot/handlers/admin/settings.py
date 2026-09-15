@@ -120,6 +120,19 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
         )
         return
 
+    chat_type = str(getattr(chat.type, "value", chat.type))
+    if chat_type not in ("channel", "supergroup", "group") or chat.id == me.id:
+        await message.answer(
+            "Это не канал.\n\n"
+            f"Telegram вернул: <b>{chat.title or chat.full_name}</b> "
+            f"(тип <code>{chat_type}</code>, id <code>{chat.id}</code>)\n\n"
+            "Пришли <code>@username</code> своего канала. Если канал приватный и username у него нет — "
+            "перешли сюда любой пост из канала (в настройках канала должно быть разрешено "
+            "показывать отправителя) либо пришли числовой id вида <code>-100…</code>.",
+            reply_markup=kb([[("⬅️ Отмена", "a:set")]]),
+        )
+        return
+
     status = str(getattr(member.status, "value", member.status))
     if status not in ("administrator", "creator"):
         await state.update_data(
