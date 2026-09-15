@@ -289,3 +289,36 @@ async def test_admin_gets_command_menu_on_start(stack):
     await feed(dp, bot, message=make_message("/start", user_id=ADMIN_ID))
     scopes = [type(r).__name__ for r in session.requests]
     assert "SetMyCommands" in scopes
+
+
+async def test_channel_setup_reports_status_and_offers_force_save(stack, monkeypatch):
+    """Если бот в канале не админ — показываем диагностику и даём сохранить вручную."""
+    dp, bot, session, deps = stack
+    from aiogram.types import Chat as TgChat, ChatMemberMember as TgMember
+
+    async def fake_request(bot_, method, timeout=None):
+        session.requests.append(method)
+        name = type(method).__name__
+        if name == "GetChat":
+            return TgChat(id=-1001234567890, type="channel", title="Мой канал", username="mychan")
+        if name == "GetMe":
+            return BOT_USER
+        if name == "GetChatMember":
+            return TgMember(user=BOT_USER, status="member")   # бот не админ
+        return await MockSession.make_request(session, bot_, method, timeout)
+
+    monkeypatch.setattr(session, "make_request", fake_request)
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:set:channel", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("@mychan", user_id=ADMIN_ID, message_id=50))
+
+    warning = [m for m in session.calls("SendMessage") if "администратора" in (m.text or "")]
+    assert warning, "должно прийти сообщение с диагностикой"
+    assert "funnel_bot" in warning[0].text and "-1001234567890" in warning[0].text
+    assert "member" in warning[0].text
+    assert (await deps.settings.get("channel_id")) == ""  # не сохранили автоматом
+
+    await feed(dp, bot, callback=make_callback("a:set:force", user_id=ADMIN_ID))
+    assert (await deps.settings.get("channel_id")) == "-1001234567890"
+    assert (await deps.settings.get("channel_url")) == "https://t.me/mychan"

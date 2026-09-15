@@ -122,9 +122,21 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
 
     status = str(getattr(member.status, "value", member.status))
     if status not in ("administrator", "creator"):
+        await state.update_data(
+            pending_id=str(chat.id),
+            pending_title=chat.title or "",
+            pending_url=f"https://t.me/{chat.username}" if chat.username else (chat.invite_link or ""),
+        )
         await message.answer(
-            "Бот есть в канале, но он не администратор — проверка подписки работать не будет.\n"
-            "Добавь бота в админы канала и пришли ещё раз."
+            "Не вижу у бота прав администратора в этом канале.\n\n"
+            f"Проверял: бот <b>@{me.username}</b> (id <code>{me.id}</code>)\n"
+            f"Канал: <b>{chat.title}</b> (id <code>{chat.id}</code>)\n"
+            f"Статус бота там: <code>{status}</code>\n\n"
+            "Обычно это значит, что админом сделали другого бота или права дали в другом канале.\n"
+            "Проверь в канале: Управление → Администраторы — там должен быть именно "
+            f"@{me.username}.\n\n"
+            "Если уверен, что всё верно — сохрани как есть, проверку подписки потом протестируем.",
+            reply_markup=kb([[("💾 Сохранить всё равно", "a:set:force")], [("⬅️ Отмена", "a:set")]]),
         )
         return
 
@@ -136,6 +148,24 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
     await state.clear()
     await message.answer(f"Канал сохранён: {chat.title} (<code>{chat.id}</code>) ✅")
     await settings_screen(message, deps)
+
+
+@router.callback_query(F.data == "a:set:force")
+async def cb_channel_force(call: CallbackQuery, state: FSMContext, deps) -> None:
+    """Сохранить канал, даже если Telegram не показал у бота прав админа."""
+    data = await state.get_data()
+    if not data.get("pending_id"):
+        await call.answer("Нечего сохранять, начни заново", show_alert=True)
+        return
+    field = data.get("field", "channel")
+    prefix = "private_channel_id" if field == "private" else "channel_id"
+    await deps.settings.set(prefix, data["pending_id"])
+    if field == "channel":
+        await deps.settings.set("channel_url", data.get("pending_url", ""))
+        await deps.settings.set("channel_title", data.get("pending_title", ""))
+    await state.clear()
+    await call.answer("Сохранил")
+    await settings_screen(call, deps)
 
 
 # --- кружок приветствия ---------------------------------------------------
