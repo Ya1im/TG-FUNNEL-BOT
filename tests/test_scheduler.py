@@ -1,11 +1,10 @@
-import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import SendMessage
 
 from bot.repo.funnel import FunnelRepo
 from bot.repo.settings import SettingsRepo
 from bot.repo.users import UsersRepo
-from bot.scheduler import GATE_RETRY_SECONDS, Scheduler
+from bot.scheduler import Scheduler
 
 METHOD = SendMessage(chat_id=1, text="x")
 

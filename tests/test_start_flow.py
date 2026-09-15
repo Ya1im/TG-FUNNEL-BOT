@@ -2,10 +2,8 @@ import pytest
 
 from bot.config import Config
 from bot.deps import Deps
-from bot.repo.settings import SettingsRepo
 from bot.sender import RateLimiter
 from bot.services import check_subscription_flow, deliver_material, start_flow
-from bot.subscription import ChannelGate
 
 
 class FakeUser:

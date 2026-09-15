@@ -49,7 +49,12 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    config = Config.from_env()
+    try:
+        config = Config.from_env()
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        log.error("Подсказка: cp .env.example .env и заполни BOT_TOKEN и ADMIN_IDS")
+        return
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     db = await Database(config.db_path).connect()
 

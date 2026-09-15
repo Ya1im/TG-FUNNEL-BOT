@@ -12,7 +12,7 @@ from bot.config import Config
 from bot.deps import Deps
 from bot.handlers.admin.broadcast import parse_schedule
 from bot.handlers.admin.common import parse_buttons, preview
-from bot.__main__ import build_dispatcher
+from tests.conftest import fresh_dispatcher
 
 TZ = ZoneInfo("Europe/Moscow")
 FAKE_TOKEN = "123456789:AAFakeTokenForTestsOnly_0123456789ab"
@@ -29,7 +29,7 @@ def config():
 async def test_dispatcher_builds_with_all_routers(db, config):
     bot = Bot(FAKE_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     deps = Deps.build(config, db, bot)
-    dp = build_dispatcher(deps)
+    dp = fresh_dispatcher(deps)
     names = {r.name for r in dp.sub_routers[0].sub_routers[0].sub_routers}
     assert {"admin-media", "admin-funnel", "admin-material", "admin-settings",
             "admin-stats", "admin-broadcast"} <= names

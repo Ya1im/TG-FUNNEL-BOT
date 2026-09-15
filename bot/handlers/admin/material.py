@@ -137,8 +137,6 @@ async def cb_material_delete(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data == "a:mat:prev")
 async def cb_material_preview(call: CallbackQuery, deps) -> None:
-    from bot.services import deliver_material  # локальный импорт: избегаем цикла
-
     await call.answer("Отправляю материал тебе")
     user_id = call.from_user.id
     await deps.users.upsert(user_id, call.from_user.username, call.from_user.first_name)

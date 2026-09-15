@@ -1,4 +1,3 @@
-import pytest
 
 from bot.repo.media import MediaRepo
 from bot.repo.settings import SettingsRepo

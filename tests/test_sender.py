@@ -1,6 +1,4 @@
-import asyncio
 
-import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.methods import SendMessage
 
