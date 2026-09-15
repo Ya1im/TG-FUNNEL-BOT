@@ -5,7 +5,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Message
 
 from bot.deps import Deps
 from bot.keyboards import CHECK_CALLBACK
@@ -18,6 +18,7 @@ router = Router(name="user")
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, deps: Deps) -> None:
     payload = (command.args or "").strip()[:64] or None
+    await _sync_admin_commands(message, deps)
     await start_flow(message.bot, deps, message.from_user, message.chat.id, payload)
 
 
@@ -27,13 +28,27 @@ async def cb_check_subscription(call: CallbackQuery, deps: Deps) -> None:
         call.bot, deps, call.from_user.id, call.message.chat.id
     )
     if ok:
+        # Клавиатуру не убираем: человек должен видеть, что кнопки на месте
         await call.answer(await deps.settings.get("subscribed_ok_alert"))
-        try:
-            await call.message.edit_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001 — сообщение могло устареть
-            pass
     else:
         await call.answer(await deps.settings.get("not_subscribed_alert"), show_alert=True)
+
+
+async def _sync_admin_commands(message: Message, deps: Deps) -> None:
+    """Меню команд для админа выставляем при первом заходе — до /start чат не существует."""
+    if not deps.config.is_admin(message.from_user.id):
+        return
+    try:
+        await message.bot.set_my_commands(
+            [
+                BotCommand(command="start", description="Пройти сценарий как пользователь"),
+                BotCommand(command="admin", description="Админка"),
+                BotCommand(command="reset", description="Сбросить своё прохождение"),
+            ],
+            scope=BotCommandScopeChat(chat_id=message.chat.id),
+        )
+    except Exception:  # noqa: BLE001 — не критично
+        log.debug("Не смог выставить команды админу %s", message.from_user.id)
 
 
 @router.message(Command("reset"))

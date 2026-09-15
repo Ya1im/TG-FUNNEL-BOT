@@ -101,6 +101,8 @@ async def build_invite_link(bot, deps, user_id: int) -> str | None:
 
 async def check_subscription_flow(bot, deps, user_id: int, chat_id: int) -> bool:
     """Возвращает True, если подписка есть (и материал выдан)."""
+    if not (await deps.settings.get("channel_id")).strip():
+        log.warning("Канал не задан — проверка подписки пропускает всех")
     if await deps.gate.check(user_id):
         user = await deps.users.get(user_id)
         if not (user and user["material_sent_at"]):

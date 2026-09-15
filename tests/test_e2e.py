@@ -269,3 +269,23 @@ async def test_reset_is_admin_only(stack):
     await deps.users.mark_material_sent(ADMIN_ID)
     await feed(dp, bot, message=make_message("/reset", user_id=ADMIN_ID))
     assert (await deps.users.get(ADMIN_ID))["material_sent_at"] is None
+
+
+async def test_keyboard_stays_after_successful_check(stack):
+    dp, bot, session, deps = stack
+    await deps.settings.set("channel_id", "-1001111111111")
+    await deps.material.add_block(text="Материал")
+    await feed(dp, bot, message=make_message("/start"))
+    session.requests.clear()
+
+    await feed(dp, bot, callback=make_callback("check_sub"))
+
+    # клавиатуру не трогаем — никаких EditMessageReplyMarkup
+    assert "EditMessageReplyMarkup" not in session.names()
+
+
+async def test_admin_gets_command_menu_on_start(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/start", user_id=ADMIN_ID))
+    scopes = [type(r).__name__ for r in session.requests]
+    assert "SetMyCommands" in scopes
