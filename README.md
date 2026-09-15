@@ -63,9 +63,14 @@ cd ~/Desktop/тима
 ```bash
 cp .env.example .env
 nano .env          # BOT_TOKEN и ADMIN_IDS обязательны
+mkdir -p data && chown -R 1000:1000 data   # иначе SQLite не сможет открыть базу
 docker compose up -d --build
 docker compose logs -f
 ```
+
+⚠️ `chown -R 1000:1000 data` обязателен при бинд-маунте: процесс в контейнере работает под
+непривилегированным пользователем, а папку docker создаёт от root. Симптом, если забыть —
+`sqlite3.OperationalError: unable to open database file`.
 
 5. (необязательно) Залей шаблон воронки — материал и три прогрева-заглушки:
 
