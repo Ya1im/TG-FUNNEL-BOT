@@ -5,7 +5,7 @@ import logging
 
 from aiogram.exceptions import TelegramAPIError
 
-from bot.content import ContentBlock
+from bot.content import ContentBlock, apply_placeholders
 from bot.keyboards import link_kb, subscribe_kb
 from bot.repo.funnel import block_from_row
 from bot.sender import safe_send, send_block
@@ -22,7 +22,9 @@ async def send_welcome(bot, deps, chat_id: int) -> None:
             block = ContentBlock(media_kind=row["kind"], file_id=row["file_id"])
             await send_block(block, bot, chat_id, users=deps.users, limiter=deps.limiter)
 
-    text = await deps.settings.get("menu_text")
+    text = apply_placeholders(
+        await deps.settings.get("menu_text"), await deps.settings.get("channel_url")
+    )
     kb = await subscribe_kb(deps.settings)
 
     async def action():

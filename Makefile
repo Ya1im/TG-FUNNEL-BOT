@@ -1,4 +1,4 @@
-.PHONY: install test run up down logs restart backup
+.PHONY: install test run seed up down logs restart backup
 
 install:
 	python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
@@ -8,6 +8,9 @@ test:
 
 run:
 	./.venv/bin/python -m bot
+
+seed:
+	./.venv/bin/python -m bot.seed
 
 up:
 	docker compose up -d --build

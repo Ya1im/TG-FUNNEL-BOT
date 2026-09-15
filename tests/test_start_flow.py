@@ -154,3 +154,12 @@ async def test_invite_falls_back_to_static_link(db, config):
     bot = FakeBot()
     await deliver_material(bot, deps, 1)
     assert bot.calls[-1][2].inline_keyboard[0][0].url == "https://t.me/+static"
+
+
+async def test_channel_placeholder_is_replaced(db, config):
+    deps = await make_deps(db, config)
+    await deps.settings.set("channel_url", "https://t.me/nastyacareera")
+    await deps.settings.set("menu_text", "Подпишись: {channel}\nПотом жми кнопку")
+    bot = FakeBot()
+    await start_flow(bot, deps, FakeUser(), chat_id=1)
+    assert "https://t.me/nastyacareera" in bot.calls[0][1]

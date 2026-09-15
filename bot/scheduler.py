@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
+from bot.content import apply_placeholders
 from bot.keyboards import subscribe_kb
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
@@ -123,7 +124,9 @@ class Scheduler:
                 stats["failed"] += 1
 
     async def _send_reminder(self, user_id: int) -> None:
-        text = await self.settings.get("reminder_text")
+        text = apply_placeholders(
+            await self.settings.get("reminder_text"), await self.settings.get("channel_url")
+        )
         kb = await subscribe_kb(self.settings)
 
         async def action():

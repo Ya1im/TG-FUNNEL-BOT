@@ -142,6 +142,13 @@ _SENDERS = {
 }
 
 
+def apply_placeholders(text: str | None, channel_url: str = "") -> str | None:
+    """{channel} → ссылка на канал (Telegram сам покажет превью канала)."""
+    if not text:
+        return text
+    return text.replace("{channel}", channel_url or "")
+
+
 def extract_media(message: Any) -> tuple[str, str, str | None] | None:
     """Достать (kind, file_id, file_unique_id) из сообщения Telegram."""
     if getattr(message, "photo", None):

@@ -76,7 +76,7 @@ async def test_stats_and_csv(db):
 
 async def test_settings_defaults_and_override(db):
     settings = SettingsRepo(db)
-    assert await settings.get("btn_check") == "✅ Я подписан"
+    assert await settings.get("btn_check") == "Проверить подписку"
     await settings.set("btn_check", "Проверить")
     assert await settings.get("btn_check") == "Проверить"
     assert (await settings.all())["btn_check"] == "Проверить"

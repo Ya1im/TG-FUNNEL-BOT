@@ -56,7 +56,13 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-5. Открой бота в Telegram, отправь `/admin`.
+5. (необязательно) Залей шаблон воронки — материал и три прогрева-заглушки:
+
+```bash
+docker compose exec bot python -m bot.seed
+```
+
+6. Открой бота в Telegram, отправь `/admin`.
 
 ### Первичная настройка в админке
 
@@ -110,9 +116,13 @@ docker compose logs -f
 
 ```bash
 make install    # venv + зависимости
-make test       # 73 теста
+make test       # 82 теста
 make run        # запуск локально (нужен .env)
+make seed       # шаблон воронки, если база пустая
 ```
+
+⚠️ Если в папке лежит `.venv-agent` — это Linux-окружение из рабочей сессии, на macOS оно не запустится.
+Свой venv создавай командой `make install`.
 
 Структура:
 
