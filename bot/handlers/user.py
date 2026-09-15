@@ -57,3 +57,13 @@ async def cmd_help(message: Message, deps: Deps) -> None:
         )
     else:
         await message.answer("Жми /start 🙂")
+
+
+@router.message(F.text | F.photo | F.video | F.document | F.voice | F.video_note)
+async def fallback(message: Message, deps: Deps) -> None:
+    """Любое сообщение не по сценарию — мягко возвращаем в воронку."""
+    user = await deps.users.get(message.from_user.id)
+    if user and user["material_sent_at"]:
+        await message.answer(await deps.settings.get("already_started_text"))
+    else:
+        await send_welcome(message.bot, deps, message.chat.id)

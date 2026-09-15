@@ -6,6 +6,7 @@ from typing import Any
 
 from bot.config import Config
 from bot.db import Database
+from bot.repo.broadcasts import BroadcastsRepo
 from bot.repo.funnel import FunnelRepo
 from bot.repo.material import MaterialRepo
 from bot.repo.media import MediaRepo
@@ -27,6 +28,7 @@ class Deps:
     gate: ChannelGate
     limiter: RateLimiter
     broadcasts: Any = None
+    engine: Any = None
     scheduler: Any = None
 
     @classmethod
@@ -43,4 +45,5 @@ class Deps:
             settings=settings,
             gate=ChannelGate(bot, settings, users),
             limiter=RateLimiter(config.messages_per_second),
+            broadcasts=BroadcastsRepo(db),
         )
