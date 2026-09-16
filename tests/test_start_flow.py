@@ -85,6 +85,21 @@ async def test_start_without_note_sends_only_menu(db, config):
     assert [c[0] for c in bot.calls] == ["text"]
 
 
+async def test_repeat_start_before_material_skips_note(db, config):
+    """Кружок шлём только на самый первый /start — повтор до подписки лишь освежает меню."""
+    deps = await make_deps(db, config)
+    media_id = await deps.media.save("krug", "video_note", "FILE_NOTE")
+    await deps.settings.set("welcome_note_media_id", str(media_id))
+    bot = FakeBot()
+
+    await start_flow(bot, deps, FakeUser(), chat_id=1)
+    assert [c[0] for c in bot.calls] == ["video_note", "text"]
+
+    bot.calls.clear()
+    await start_flow(bot, deps, FakeUser(), chat_id=1)
+    assert [c[0] for c in bot.calls] == ["text"]  # кружок не повторяем
+
+
 async def test_repeat_start_after_material_is_short(db, config):
     deps = await make_deps(db, config)
     await deps.users.upsert(1)

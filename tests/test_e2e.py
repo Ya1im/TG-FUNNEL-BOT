@@ -568,3 +568,43 @@ async def test_stats_chat_clear_with_dash(stack):
     await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=71))
 
     assert (await deps.settings.get("report_chat_id")) == ""
+
+
+async def test_stray_text_from_user_is_deleted_silently(stack):
+    """Постороннее сообщение обычного пользователя просто удаляется, без ответа."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/start"))
+    session.requests.clear()
+
+    await feed(dp, bot, message=make_message("привет, а как это работает?", message_id=15))
+
+    assert "SendMessage" not in session.names()
+    deleted = {d.message_id for d in session.calls("DeleteMessage")}
+    assert deleted == {15}
+
+
+async def test_stray_photo_from_user_is_deleted_silently(stack):
+    """То же самое для медиа — фото/видео/стикеры и т.д. тоже просто чистятся."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/start"))
+    session.requests.clear()
+
+    await feed(dp, bot, message=make_photo_message("PH1", message_id=16, user_id=USER_ID))
+
+    assert "SendMessage" not in session.names()
+    deleted = {d.message_id for d in session.calls("DeleteMessage")}
+    assert deleted == {16}
+
+
+async def test_repeat_start_via_dispatcher_skips_note_second_time(stack):
+    """Через реальный диспетчер: второй /start до подписки не шлёт кружок повторно."""
+    dp, bot, session, deps = stack
+    media_id = await deps.media.save("krug", "video_note", "FILE_NOTE")
+    await deps.settings.set("welcome_note_media_id", str(media_id))
+
+    await feed(dp, bot, message=make_message("/start"))
+    assert "SendVideoNote" in session.names()
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/start", message_id=17))
+    assert session.names() == ["SendMessage"]

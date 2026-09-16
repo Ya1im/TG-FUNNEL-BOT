@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Message
 
@@ -74,11 +75,15 @@ async def cmd_help(message: Message, deps: Deps) -> None:
         await message.answer("Жми /start 🙂")
 
 
-@router.message(F.text | F.photo | F.video | F.document | F.voice | F.video_note)
-async def fallback(message: Message, deps: Deps) -> None:
-    """Любое сообщение не по сценарию — мягко возвращаем в воронку."""
-    user = await deps.users.get(message.from_user.id)
-    if user and user["material_sent_at"]:
-        await message.answer(await deps.settings.get("already_started_text"))
-    else:
-        await send_welcome(message.bot, deps, message.chat.id)
+@router.message()
+async def fallback(message: Message) -> None:
+    """Любое сообщение не по сценарию (текст, медиа, стикеры и т.д.) — просто убираем.
+
+    Ожидаемое действие пользователя — кнопки в меню; всё остальное только
+    захламляет переписку. В личных чатах бот может удалять входящие сообщения
+    без специальных прав, поэтому чистим тихо, без ответа.
+    """
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass

@@ -13,15 +13,8 @@ from bot.sender import safe_send, send_block
 log = logging.getLogger(__name__)
 
 
-async def send_welcome(bot, deps, chat_id: int) -> None:
-    """Кружок (или другое медиа) + меню с кнопками подписки."""
-    media_id = await deps.settings.get_int("welcome_note_media_id")
-    if media_id:
-        row = await deps.media.get(media_id)
-        if row:
-            block = ContentBlock(media_kind=row["kind"], file_id=row["file_id"])
-            await send_block(block, bot, chat_id, users=deps.users, limiter=deps.limiter)
-
+async def send_menu(bot, deps, chat_id: int) -> None:
+    """Текст меню с кнопками подписки — без кружка (для повторных /start)."""
     text = apply_placeholders(
         await deps.settings.get("menu_text"), await deps.settings.get("channel_url")
     )
@@ -33,8 +26,19 @@ async def send_welcome(bot, deps, chat_id: int) -> None:
     await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
 
 
+async def send_welcome(bot, deps, chat_id: int) -> None:
+    """Кружок (или другое медиа) + меню с кнопками подписки — для самого первого захода."""
+    media_id = await deps.settings.get_int("welcome_note_media_id")
+    if media_id:
+        row = await deps.media.get(media_id)
+        if row:
+            block = ContentBlock(media_kind=row["kind"], file_id=row["file_id"])
+            await send_block(block, bot, chat_id, users=deps.users, limiter=deps.limiter)
+    await send_menu(bot, deps, chat_id)
+
+
 async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = None) -> None:
-    await deps.users.upsert(
+    is_new = await deps.users.upsert(
         tg_user.id,
         getattr(tg_user, "username", None),
         getattr(tg_user, "first_name", None),
@@ -49,7 +53,11 @@ async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = Non
 
         await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
         return
-    await send_welcome(bot, deps, chat_id)
+    if is_new:
+        await send_welcome(bot, deps, chat_id)
+    else:
+        # Повторный /start до получения материала — кружок уже видел, шлём только меню
+        await send_menu(bot, deps, chat_id)
 
 
 async def deliver_material(bot, deps, chat_id: int) -> None:
