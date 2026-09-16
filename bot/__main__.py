@@ -19,6 +19,7 @@ from bot.db import Database
 from bot.deps import Deps
 from bot.handlers import build_router
 from bot.scheduler import Scheduler
+from bot.stats_export import stats_export_hook
 
 log = logging.getLogger("bot")
 
@@ -88,6 +89,7 @@ async def main() -> None:
         tick_seconds=config.tick_seconds,
         broadcast_hook=deps.engine.run_scheduled,
         backup_hook=daily_backup_hook(db),
+        stats_export_hook=stats_export_hook(deps),
     )
     deps.scheduler = scheduler
 

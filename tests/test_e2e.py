@@ -71,6 +71,14 @@ class MockSession(BaseSession):
             )
         if name == "CopyMessage":
             return MessageId(message_id=1)
+        if name == "GetChat":
+            chat_id = method.chat_id
+            resolved_id = chat_id if isinstance(chat_id, int) else 777
+            return Chat(
+                id=resolved_id,
+                type="private",
+                username=chat_id.lstrip("@") if isinstance(chat_id, str) else None,
+            )
         if name.startswith("Send"):
             return Message(
                 message_id=len(self.requests) + 100,
@@ -350,3 +358,213 @@ async def test_channel_setup_rejects_non_channel(stack, monkeypatch):
     warning = [m for m in session.calls("SendMessage") if "Это не канал" in (m.text or "")]
     assert warning, "должны отказать и объяснить"
     assert (await deps.settings.get("channel_id")) == ""
+
+
+
+def make_photo_message(file_id: str, message_id: int, user_id: int = ADMIN_ID) -> Message:
+    return Message(
+        message_id=message_id,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=user_id, type="private"),
+        from_user=User(id=user_id, is_bot=False, first_name="Босс"),
+        photo=[{"file_id": file_id, "file_unique_id": f"u{message_id}", "width": 10, "height": 10}],
+    )
+
+
+async def test_stray_media_is_captured_and_saved(stack):
+    """Файл, присланный мимо /admin, бот подхватывает сам и предлагает сохранить."""
+    dp, bot, session, deps = stack
+
+    await feed(dp, bot, message=make_photo_message("PH1", 70))
+    assert len(session.calls("SendMessage")) == 1  # завели один трекер
+
+    await feed(dp, bot, message=make_photo_message("PH2", 71))
+    # второй файл редактирует тот же трекер, а не плодит новое сообщение
+    assert len(session.calls("SendMessage")) == 1
+    assert len(session.calls("EditMessageText")) == 1
+
+    await feed(dp, bot, callback=make_callback("a:cap:all", user_id=ADMIN_ID))
+
+    items = await deps.media.list(limit=10)
+    assert {i["file_id"] for i in items} == {"PH1", "PH2"}
+    deleted = {d.message_id for d in session.calls("DeleteMessage")}
+    assert deleted == {70, 71}  # исходные сообщения убраны из чата
+
+
+async def test_stray_media_cancel_deletes_without_saving(stack):
+    dp, bot, session, deps = stack
+
+    await feed(dp, bot, message=make_photo_message("PH3", 80))
+    await feed(dp, bot, callback=make_callback("a:cap:cancel", user_id=ADMIN_ID))
+
+    assert await deps.media.count() == 0
+    deleted = {d.message_id for d in session.calls("DeleteMessage")}
+    assert deleted == {80}
+
+
+async def test_stray_media_pick_saves_only_chosen(stack):
+    dp, bot, session, deps = stack
+
+    await feed(dp, bot, message=make_photo_message("PH4", 90))
+    await feed(dp, bot, message=make_photo_message("PH5", 91))
+    await feed(dp, bot, callback=make_callback("a:cap:pick", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:cap:tgl:0", user_id=ADMIN_ID))  # снять первый файл
+    await feed(dp, bot, callback=make_callback("a:cap:go", user_id=ADMIN_ID))
+
+    items = await deps.media.list(limit=10)
+    assert [i["file_id"] for i in items] == ["PH5"]
+    # и сохранённый, и пропущенный убраны из чата — переписка не остаётся
+    deleted = {d.message_id for d in session.calls("DeleteMessage")}
+    assert deleted == {90, 91}
+
+
+
+async def test_media_item_click_edits_card_not_new_message(stack):
+    """Клик по файлу в медиатеке правит то же сообщение, а не шлёт превью новым."""
+    dp, bot, session, deps = stack
+    media_id = await deps.media.save("krug_privet", "video_note", "OLD_BOT_FILE_ID")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:media:s:{media_id}", user_id=ADMIN_ID))
+
+    assert "SendMessage" not in session.names()
+    assert "SendVideoNote" not in session.names()  # превью не шлём, пока не попросили
+    assert "EditMessageText" in session.names()
+
+
+async def test_media_preview_with_stale_file_id_shows_alert_and_stays_deletable(stack, monkeypatch):
+    """Файл от старого бота (протухший file_id) не должен вешать кнопку — только алерт."""
+    dp, bot, session, deps = stack
+    media_id = await deps.media.save("krug_privet", "video_note", "OLD_BOT_FILE_ID")
+
+    from aiogram.exceptions import TelegramBadRequest
+
+    async def fake_request(bot_, method, timeout=None):
+        session.requests.append(method)
+        if type(method).__name__ == "SendVideoNote":
+            raise TelegramBadRequest(method=method, message="wrong file identifier/HTTP URL specified")
+        return await MockSession.make_request(session, bot_, method, timeout)
+
+    monkeypatch.setattr(session, "make_request", fake_request)
+
+    await feed(dp, bot, callback=make_callback(f"a:media:prev:{media_id}", user_id=ADMIN_ID))
+    alerts = [r for r in session.calls("AnswerCallbackQuery") if r.show_alert]
+    assert alerts, "должен прийти алерт вместо зависшей кнопки"
+
+    # несмотря на битый файл, удалить его через админку по-прежнему можно
+    await feed(dp, bot, callback=make_callback(f"a:media:del:{media_id}", user_id=ADMIN_ID))
+    assert await deps.media.get(media_id) is None
+
+
+async def test_material_item_click_edits_card_not_new_message(stack):
+    """Клик по блоку материала правит то же сообщение, а не шлёт обзор новым сообщением."""
+    dp, bot, session, deps = stack
+    await deps.material.add_block(text="Держи материал", buttons=[{"text": "Урок", "url": "https://x.test"}])
+    blocks = await deps.material.list_blocks()
+    block_id = blocks[0]["id"]
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:mat:s:{block_id}", user_id=ADMIN_ID))
+
+    assert "SendMessage" not in session.names()
+    assert "EditMessageText" in session.names()
+
+    # живое превью — по отдельной кнопке, и это уже настоящее новое сообщение
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:mat:prev:{block_id}", user_id=ADMIN_ID))
+    assert "SendMessage" in session.names()
+
+
+async def test_stats_reset_requires_confirmation_and_wipes_users(stack):
+    """«Обнулить статистику» — сначала спрашивает подтверждение, стирает только по «Да»."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1, "vasya", "Вася")
+    await db_has_user(deps, 1)
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat:reset", user_id=ADMIN_ID))
+
+    # без подтверждения ничего не стёрлось
+    assert await deps.users.get(1) is not None
+
+    await feed(dp, bot, callback=make_callback("a:stat:reset:go", user_id=ADMIN_ID))
+    assert await deps.users.get(1) is None
+
+
+async def db_has_user(deps, tg_id):
+    assert await deps.users.get(tg_id) is not None
+
+
+async def test_admin_excluded_from_stats_screen(stack):
+    """Админ — тестер, он не должен попадать в цифры статистики."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(ADMIN_ID, "boss", "Босс")
+    await deps.users.upsert(1, "vasya", "Вася")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+
+    edits = session.calls("EditMessageText")
+    assert edits, "ожидали правку меню со статистикой"
+    text = edits[-1].text
+    assert "Всего: 1" in text
+
+
+async def test_stats_file_button_sends_document(stack):
+    """«Скачать таблицу» отдаёт .xlsx — собирает на лету, если планировщик ещё не успел."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1, "vasya", "Вася")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:file", user_id=ADMIN_ID))
+
+    assert "SendDocument" in session.names()
+
+
+async def test_stats_send_without_chat_shows_alert(stack):
+    """Без настроенного чата «Переслать эксперту» не молчит, а объясняет, что делать."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:send", user_id=ADMIN_ID))
+
+    assert "SendDocument" not in session.names()
+    alerts = [r for r in session.calls("AnswerCallbackQuery") if r.show_alert]
+    assert alerts
+
+
+async def test_stats_chat_setup_and_send(stack):
+    """Задаём чат для отчётов, затем «Переслать эксперту» шлёт файл именно туда."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1, "vasya", "Вася")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat:chat", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("@expert_chat", user_id=ADMIN_ID, message_id=70))
+
+    assert (await deps.settings.get("report_chat_id")) == "777"
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:send", user_id=ADMIN_ID))
+    docs = session.calls("SendDocument")
+    assert docs and docs[0].chat_id == 777
+
+
+async def test_stats_chat_clear_with_dash(stack):
+    """«-» сбрасывает чат для отчётов обратно на «не задан»."""
+    dp, bot, session, deps = stack
+    await deps.settings.set("report_chat_id", "123")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:stat:chat", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=71))
+
+    assert (await deps.settings.get("report_chat_id")) == ""

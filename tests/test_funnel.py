@@ -102,6 +102,17 @@ async def test_export_import_roundtrip(db):
     assert steps[0]["media_slug"] == "krug"
 
 
+async def test_pending_count_excludes_admin(db):
+    funnel = FunnelRepo(db, admin_ids=(2,))
+    await make_user(db, 1)
+    await make_user(db, 2)
+    await funnel.add_step(0, text="Шаг")
+    await funnel.enqueue(1, now=0)
+    await funnel.enqueue(2, now=0)
+    assert await funnel.pending_count() == 1
+    assert await funnel.pending_count(user_id=2) == 1
+
+
 def test_parse_delay():
     assert parse_delay("30м") == 1800
     assert parse_delay("2ч") == 7200

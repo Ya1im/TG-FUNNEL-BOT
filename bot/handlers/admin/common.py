@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import time
 
+from dataclasses import dataclass
+
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -57,9 +60,21 @@ class ChannelSet(StatesGroup):
     waiting_value = State()
 
 
+class ReportChatSet(StatesGroup):
+    """Чат, куда пересылаем таблицу статистики («📤 Переслать эксперту»)."""
+    waiting_value = State()
+
+
 class BroadcastNew(StatesGroup):
     collecting = State()
     waiting_schedule = State()
+
+
+class MediaCapture(StatesGroup):
+    """Файлы, присланные админом мимо сценария «Медиатека» — копятся тут перед сохранением."""
+
+    collecting = State()
+    picking = State()
 
 
 def kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
@@ -72,16 +87,46 @@ def kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     )
 
 
-async def show(target: Message | CallbackQuery, text: str, markup=None) -> None:
-    """Показать экран: правим сообщение, если пришли из кнопки, иначе шлём новое."""
+@dataclass
+class MenuRef:
+    """Координаты уже показанного меню-сообщения — чтобы отредактировать его, а не слать новое.
+
+    Нужна там, где следующий шаг приходит не кнопкой, а обычным сообщением от админа:
+    Telegram не даёт превратить чужое сообщение в правку старого, поэтому храним, где
+    висит меню, и правим именно его.
+    """
+
+    bot: object
+    chat_id: int
+    message_id: int
+
+
+async def show(target: "Message | CallbackQuery | MenuRef", text: str, markup=None) -> Message | None:
+    """Показать экран: правим сообщение меню, если оно есть, иначе шлём новое."""
     if isinstance(target, CallbackQuery):
-        try:
-            await target.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
-            return
-        except Exception:  # noqa: BLE001 — например, редактируем медиа-сообщение
-            await target.message.answer(text, reply_markup=markup, disable_web_page_preview=True)
-            return
-    await target.answer(text, reply_markup=markup, disable_web_page_preview=True)
+        bot, chat_id, message_id = target.message.bot, target.message.chat.id, target.message.message_id
+    elif isinstance(target, MenuRef):
+        bot, chat_id, message_id = target.bot, target.chat_id, target.message_id
+    else:
+        return await target.answer(text, reply_markup=markup, disable_web_page_preview=True)
+
+    try:
+        return await bot.edit_message_text(
+            text, chat_id=chat_id, message_id=message_id, reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return None  # экран не изменился — второе сообщение не нужно
+    except Exception:  # noqa: BLE001 — например, редактируем медиа-сообщение (нет текста)
+        pass
+    try:
+        return await bot.edit_message_caption(
+            chat_id=chat_id, message_id=message_id, caption=text, reply_markup=markup,
+        )
+    except Exception:  # noqa: BLE001 — не вышло (сообщение слишком старое/удалено) — шлём новое
+        pass
+    return await bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
 
 
 def message_text(message: Message) -> str | None:

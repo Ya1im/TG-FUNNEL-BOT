@@ -21,9 +21,10 @@ router = Router(name="admin-material")
 
 HINT = (
     "🎁 <b>Материал</b>\n\n"
-    "Это то, что человек получает сразу после успешной проверки подписки.\n"
-    "Блоки уходят по порядку: файлы, видео, тексты со ссылками.\n"
-    "Ссылка в закрытый канал добавляется автоматически, если он задан в настройках."
+    "То, что человек получает сразу после проверки подписки. Блоки уходят по порядку: "
+    "файлы, видео, тексты со ссылками.\n\n"
+    "Если в настройках задан закрытый канал — персональная ссылка на него добавится "
+    "последним блоком автоматически."
 )
 
 
@@ -43,7 +44,8 @@ async def material_screen(target, deps) -> None:
         )
     rows.append([("👁 Показать целиком", "a:mat:prev")])
     rows.append([("⬅️ Назад", "a:menu")])
-    text = HINT + "\n\n" + ("\n".join(lines) if lines else "Блоков пока нет.")
+    body = "\n".join(lines) if lines else "Блоков пока нет — жми «➕ Добавить блок»."
+    text = HINT + "\n\n" + body
     await show(target, text, kb(rows))
 
 
@@ -59,7 +61,8 @@ async def cb_material_add(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(MaterialAdd.waiting_content)
     await show(
         call,
-        "Пришли блок материала одним сообщением: текст, файл, видео, фото с подписью.",
+        "➕ <b>Новый блок материала</b>\n\n"
+        "Пришли его одним сообщением: текст, файл, видео, фото с подписью.",
         kb([[("⬅️ Отмена", "a:mat")]]),
     )
     await call.answer()
@@ -88,29 +91,62 @@ async def on_material_buttons(message: Message, state: FSMContext, deps) -> None
         text=data.get("text"), media_id=data.get("media_id"), buttons=buttons
     )
     await state.clear()
-    await message.answer("Блок добавлен ✅")
     await material_screen(message, deps)
 
 
-@router.callback_query(F.data.startswith("a:mat:s:"))
-async def cb_material_show(call: CallbackQuery, deps) -> None:
-    block_id = int(call.data.split(":")[-1])
+async def block_screen(target, deps, block_id: int) -> None:
+    """Карточка блока — правим то же сообщение, живое превью шлём только по кнопке «Показать»."""
     blocks = {b["id"]: b for b in await deps.material.list_blocks()}
     block = blocks.get(block_id)
-    if not block:
-        await call.answer("Блок не найден", show_alert=True)
+    if block is None:
+        await show(target, "Блок не найден.", kb([[("⬅️ К материалу", "a:mat")]]))
         return
-    await send_block(block_from_row(block), call.bot, call.message.chat.id, user=call.from_user)
-    await call.message.answer(
-        f"Кнопки: {buttons_hint(block['buttons_json'])}",
-        reply_markup=kb(
+    text = (
+        "🎁 <b>Блок материала</b>\n\n"
+        f"🎬 Медиа: {block['media_slug'] or 'нет'}\n"
+        f"🔘 Кнопки: {buttons_hint(block['buttons_json'])}\n\n"
+        f"Текст:\n{block['text'] or '<i>без текста</i>'}"
+    )
+    await show(
+        target,
+        text,
+        kb(
             [
+                [("👁 Показать", f"a:mat:prev:{block_id}")],
                 [("⬇️ Ниже", f"a:mat:dn:{block_id}"), ("⬆️ Выше", f"a:mat:up:{block_id}")],
                 [("🗑 Удалить", f"a:mat:del:{block_id}")],
                 [("⬅️ К материалу", "a:mat")],
             ]
         ),
     )
+
+
+@router.callback_query(F.data.startswith("a:mat:s:"))
+async def cb_material_show(call: CallbackQuery, deps) -> None:
+    block_id = int(call.data.split(":")[-1])
+    await block_screen(call, deps, block_id)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:mat:prev:"))
+async def cb_material_item_preview(call: CallbackQuery, deps) -> None:
+    """Живое превью одного блока — по кнопке, отдельным сообщением, без падения на битом file_id."""
+    block_id = int(call.data.split(":")[-1])
+    blocks = {b["id"]: b for b in await deps.material.list_blocks()}
+    block = blocks.get(block_id)
+    if not block:
+        await call.answer("Блок не найден", show_alert=True)
+        return
+    outcome = await send_block(
+        block_from_row(block), call.bot, call.message.chat.id, user=call.from_user
+    )
+    if not outcome.ok:
+        await call.answer(
+            "Не смог отправить файл — похоже, он от другого бота (сменился токен). "
+            "Удали и залей заново.",
+            show_alert=True,
+        )
+        return
     await call.answer()
 
 

@@ -11,8 +11,9 @@ FAST_STEP_SECONDS = 10  # «прогнать на себе»: задержки �
 
 
 class FunnelRepo:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, admin_ids: tuple[int, ...] = ()) -> None:
         self.db = db
+        self.admin_ids = tuple(admin_ids or ())
 
     # --- шаги -------------------------------------------------------------
 
@@ -137,6 +138,12 @@ class FunnelRepo:
 
     async def pending_count(self, user_id: int | None = None) -> int:
         if user_id is None:
+            if self.admin_ids:
+                placeholders = ",".join("?" for _ in self.admin_ids)
+                return int(await self.db.fetchval(
+                    "SELECT COUNT(*) FROM user_steps "
+                    f"WHERE status = 'pending' AND user_id NOT IN ({placeholders})",
+                    tuple(self.admin_ids), default=0))
             return int(await self.db.fetchval(
                 "SELECT COUNT(*) FROM user_steps WHERE status = 'pending'", default=0))
         return int(await self.db.fetchval(

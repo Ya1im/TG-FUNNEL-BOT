@@ -12,7 +12,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.admin.common import BroadcastNew, kb, show
+from bot.handlers.admin.common import BroadcastNew, MenuRef, kb, show
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-broadcast")
@@ -30,7 +30,7 @@ SEGMENTS = [
 
 HINT = (
     "📤 <b>Рассылка</b>\n\n"
-    "Пришли боту сообщения — текст, фото, видео, кружок, файл, хоть несколько подряд.\n"
+    "Пришли боту одно или несколько сообщений — текст, фото, видео, кружок, файл.\n\n"
     "Они уйдут людям ровно в том виде, в каком ты их отправил."
 )
 
@@ -65,11 +65,14 @@ async def cb_broadcast(call: CallbackQuery, deps, state: FSMContext) -> None:
 @router.callback_query(F.data == "a:bc:new")
 async def cb_new(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastNew.collecting)
-    await state.update_data(messages=[])
+    await state.update_data(
+        messages=[], _menu_chat_id=call.message.chat.id, _menu_message_id=call.message.message_id
+    )
     await show(
         call,
-        "Шли сообщения для рассылки — можно несколько подряд.\n"
-        "Когда закончишь, жми «Готово».",
+        "📤 <b>Сбор рассылки</b>\n\n"
+        "Шли сообщения — можно несколько подряд.\n\n"
+        "Когда закончишь, жми «✅ Готово».",
         kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]]),
     )
     await call.answer()
@@ -77,14 +80,19 @@ async def cb_new(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(BroadcastNew.collecting)
 async def on_collect(message: Message, state: FSMContext) -> None:
+    """Копим сообщения для рассылки. Счётчик правим в одном и том же сообщении,
+    чтобы при нескольких подряд присланных постах чат не зарастал одинаковыми уведомлениями."""
     data = await state.get_data()
     messages = data.get("messages", [])
     messages.append({"chat_id": message.chat.id, "message_id": message.message_id})
     await state.update_data(messages=messages)
-    await message.answer(
-        f"Добавлено сообщений: {len(messages)}",
-        reply_markup=kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]]),
-    )
+    text = f"📤 <b>Сбор рассылки</b>\n\nДобавлено сообщений: {len(messages)}\n\nШли ещё или жми «✅ Готово»."
+    markup = kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]])
+    chat_id, message_id = data.get("_menu_chat_id"), data.get("_menu_message_id")
+    ref = MenuRef(message.bot, chat_id, message_id) if chat_id and message_id else None
+    result = await show(ref or message, text, markup)
+    if ref is None and result is not None:
+        await state.update_data(_menu_chat_id=result.chat.id, _menu_message_id=result.message_id)
 
 
 @router.callback_query(F.data == "a:bc:done")
@@ -98,7 +106,7 @@ async def cb_done(call: CallbackQuery, deps, state: FSMContext) -> None:
         count = await deps.users.segment_count(key)
         rows.append([(f"{label} — {count}", f"a:bc:seg:{key}")])
     rows.append([("✖️ Отмена", "a:bc")])
-    await show(call, "Кому отправляем?", kb(rows))
+    await show(call, "📤 <b>Кому отправляем?</b>\n\nВыбери сегмент получателей:", kb(rows))
     await call.answer()
 
 
@@ -115,10 +123,10 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
     label = dict(SEGMENTS).get(segment, segment)
     await show(
         call,
-        f"Рассылка #{broadcast_id} готова.\n\n"
+        f"📤 <b>Рассылка #{broadcast_id} готова</b>\n\n"
         f"Сообщений: {len(messages)}\n"
         f"Получателей: <b>{total}</b> ({label})\n\n"
-        f"Примерное время отправки: {_eta(total, deps)}",
+        f"⏱ Время отправки: ~{_eta(total, deps)}",
         kb(
             [
                 [("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")],
@@ -202,7 +210,8 @@ async def cb_schedule(call: CallbackQuery, state: FSMContext) -> None:
     now = datetime.now(TZ).strftime("%d.%m %H:%M")
     await show(
         call,
-        f"Когда отправить? Время московское, сейчас {now}.\n\n"
+        "🕓 <b>Когда отправить?</b>\n\n"
+        f"Время московское, сейчас {now}.\n\n"
         "Форматы: <code>21:30</code>, <code>завтра 10:00</code>, <code>20.09 14:00</code>",
         kb([[("⬅️ Отмена", "a:bc")]]),
     )
@@ -222,7 +231,6 @@ async def on_schedule(message: Message, state: FSMContext, deps) -> None:
         (when, broadcast_id),
     )
     await state.clear()
-    await message.answer(f"Запланировал на {fmt_time(when)} ✅\nОтправится само, бот трогать не нужно.")
     await broadcast_screen(message, deps)
 
 

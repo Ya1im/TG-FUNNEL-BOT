@@ -35,6 +35,7 @@ class Scheduler:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         broadcast_hook: Callable[[], Awaitable[None]] | None = None,
         backup_hook: Callable[[], Awaitable[None]] | None = None,
+        stats_export_hook: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.bot = bot
         self.users = users
@@ -47,6 +48,7 @@ class Scheduler:
         self.sleep = sleep
         self.broadcast_hook = broadcast_hook
         self.backup_hook = backup_hook
+        self.stats_export_hook = stats_export_hook
         self._task: asyncio.Task | None = None
         self._stopped = False
 
@@ -81,6 +83,8 @@ class Scheduler:
             await self.broadcast_hook()
         if self.backup_hook is not None:
             await self.backup_hook()
+        if self.stats_export_hook is not None:
+            await self.stats_export_hook()
         if any(stats.values()):
             log.info("Тик: %s", stats)
         return stats

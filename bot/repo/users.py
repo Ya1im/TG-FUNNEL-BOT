@@ -18,8 +18,20 @@ SEGMENTS = {
 
 
 class UsersRepo:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, admin_ids: tuple[int, ...] = ()) -> None:
         self.db = db
+        self.admin_ids = tuple(admin_ids or ())
+
+    def _admin_exclusion(self) -> tuple[str, tuple]:
+        """SQL-условие и параметры, исключающие админов из статистики и сегментов.
+
+        Админ — тестер, а не реальный пользователь: он не должен попадать
+        ни в один счётчик и ни в один сегмент рассылки.
+        """
+        if not self.admin_ids:
+            return "1=1", ()
+        placeholders = ",".join("?" for _ in self.admin_ids)
+        return f"tg_id NOT IN ({placeholders})", tuple(self.admin_ids)
 
     async def upsert(
         self,
@@ -89,19 +101,24 @@ class UsersRepo:
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
 
     async def segment_ids(self, segment: str, value: str | None = None) -> list[int]:
+        excl_sql, excl_params = self._admin_exclusion()
         if segment == "source":
             rows = await self.db.fetchall(
-                "SELECT tg_id FROM users WHERE status = 'active' AND source = ?", (value,)
+                f"SELECT tg_id FROM users WHERE status = 'active' AND source = ? AND {excl_sql}",
+                (value, *excl_params),
             )
         else:
             where = SEGMENTS.get(segment, SEGMENTS["all"])
-            rows = await self.db.fetchall(f"SELECT tg_id FROM users WHERE {where}")
+            rows = await self.db.fetchall(
+                f"SELECT tg_id FROM users WHERE {where} AND {excl_sql}", excl_params
+            )
         return [r["tg_id"] for r in rows]
 
     async def segment_count(self, segment: str, value: str | None = None) -> int:
         return len(await self.segment_ids(segment, value))
 
     async def stats(self) -> dict[str, int]:
+        excl_sql, excl_params = self._admin_exclusion()
         row = await self.db.fetchone(
             "SELECT COUNT(*) AS total,"
             " SUM(status = 'active') AS active,"
@@ -109,16 +126,28 @@ class UsersRepo:
             " SUM(status = 'active' AND is_subscribed = 1) AS subscribed,"
             " SUM(material_sent_at IS NOT NULL) AS got_material,"
             " SUM(started_at > strftime('%s','now') - 86400) AS today"
-            " FROM users"
+            f" FROM users WHERE {excl_sql}",
+            excl_params,
         )
         return {k: int(row[k] or 0) for k in row.keys()}
 
     async def sources(self) -> list[tuple[str, int]]:
+        excl_sql, excl_params = self._admin_exclusion()
         rows = await self.db.fetchall(
-            "SELECT COALESCE(source, '—') AS src, COUNT(*) AS cnt FROM users "
-            "GROUP BY src ORDER BY cnt DESC LIMIT 30"
+            f"SELECT COALESCE(source, '—') AS src, COUNT(*) AS cnt FROM users WHERE {excl_sql} "
+            "GROUP BY src ORDER BY cnt DESC LIMIT 30",
+            excl_params,
         )
         return [(r["src"], r["cnt"]) for r in rows]
+
+    async def export_rows(self):
+        """Строки для таблицы статистики — без учёта админа (см. _admin_exclusion)."""
+        excl_sql, excl_params = self._admin_exclusion()
+        return await self.db.fetchall(
+            f"SELECT tg_id, username, first_name, started_at, source, status, "
+            f"is_subscribed, material_sent_at FROM users WHERE {excl_sql} ORDER BY started_at",
+            excl_params,
+        )
 
     async def export_csv(self) -> bytes:
         rows = await self.db.fetchall(
@@ -144,6 +173,18 @@ class UsersRepo:
                 ]
             )
         return buf.getvalue().encode("utf-8-sig")
+
+    async def reset_all_stats(self) -> None:
+        """Полное обнуление базы пользователей — перед стартом на боевом канале.
+
+        Стирает: users, user_steps (очередь прогрева), broadcasts и
+        broadcast_targets (историю рассылок). Не трогает медиатеку, материал,
+        шаги воронки и настройки — контент заливать заново не нужно.
+        """
+        await self.db.execute("DELETE FROM broadcast_targets")
+        await self.db.execute("DELETE FROM broadcasts")
+        await self.db.execute("DELETE FROM user_steps")
+        await self.db.execute("DELETE FROM users")
 
 
 def _fmt(ts: int | None) -> str:

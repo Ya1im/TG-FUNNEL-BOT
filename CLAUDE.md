@@ -39,13 +39,14 @@ bot/scheduler.py     тик прогрева, гейт подписки, пер�
 bot/broadcast.py     движок рассылок с докатыванием после рестарта
 bot/services.py      сценарии: старт, проверка, выдача материала
 bot/repo/            users, media, funnel, material, broadcasts, settings
-bot/handlers/        user.py + admin/{media,funnel,material,settings,stats,broadcast,fallback}
+bot/handlers/        user.py + admin/{media,funnel,material,settings,stats,broadcast,capture,fallback}
+bot/stats_export.py  пересборка .xlsx-таблицы статистики по расписанию (см. ниже)
 ```
 
 ## Команды
 
 ```bash
-./.venv-agent/bin/python -m pytest -q     # 89 тестов, окружение Linux-сессии
+./.venv-agent/bin/python -m pytest -q     # 109 тестов, окружение Linux-сессии
 make install && make test                  # если запускаешь с macOS (свой .venv)
 ```
 
@@ -81,6 +82,9 @@ cd /opt/funnel-bot && docker compose up -d --build && docker compose logs --tail
    разрешение на удаление в этой папке. Симптом: `cannot lock ref 'HEAD'`.
 7. **В настройках канала** принимаем только `channel/supergroup/group`: однажды сохранился
    сам бот, потому что на вход прилетела ссылка на него.
+8. **Бот не может первым написать пользователю**, если тот ни разу не жал `/start` — платформенное
+   ограничение Telegram, не баг. Актуально для «чата для отчётов» в 📊 Статистике: если эксперт —
+   не группа/канал, а личный человек, ему сначала нужно самому запустить бота.
 
 ## Текущее состояние (15.09.2026)
 
@@ -88,6 +92,16 @@ cd /opt/funnel-bot && docker compose up -d --build && docker compose logs --tail
 прогрев. Тестовый контур: бот **@koshelekbottestbot**, канал **t.me/tesstbotrff**
 (`-1004361294839`). В базе лежит шаблон из `bot/seed.py`: блок материала и три прогрева
 (1 ч, 2,5 ч, 4 ч; третий с проверкой подписки).
+
+## Статистика: таблица и обнуление
+
+`bot/stats_export.py` пересобирает `data/stats_export.xlsx` (сводка + список пользователей,
+админ исключён — см. ниже) по хуку планировщика; интервал — настройка
+`stats_export_interval_min` (по умолчанию 60 мин). В 📊 Статистика: «Скачать таблицу» отдаёт
+готовый файл, «Переслать эксперту» шлёт его в чат из настройки `report_chat_id` (задаётся там же,
+кнопкой «✏️ Чат для пересылки»), «Обнулить статистику» — разовая ручная очистка
+(`users`, `user_steps`, `broadcasts`, `broadcast_targets`; медиатека/материал/воронка/настройки
+не трогаются). Админ (`ADMIN_IDS`) исключён из всех метрик и сегментов — он тестер, не пользователь.
 
 ## Что дальше
 

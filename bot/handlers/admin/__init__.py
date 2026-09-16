@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.admin import broadcast, fallback, funnel, material, media, settings, stats
+from bot.handlers.admin import broadcast, capture, fallback, funnel, material, media, settings, stats
 from bot.handlers.admin.common import AdminFilter, kb, show
 
 router = Router(name="admin")
@@ -28,12 +28,14 @@ async def menu_text(deps) -> str:
     steps = len(await deps.funnel.list_steps(only_enabled=True))
     channel = (await deps.settings.get("channel_id")).strip() or "не задан"
     return (
-        "<b>Админка</b>\n\n"
-        f"👥 Пользователей: {stats_data['total']} (активных {stats_data['active']}, "
-        f"заблокировали {stats_data['blocked']})\n"
+        "🛠 <b>Админка</b>\n\n"
+        "Здесь управляешь ботом целиком: медиатека, воронка прогрева, материал, "
+        "рассылки и настройки.\n\n"
+        f"👥 Пользователей: {stats_data['total']} "
+        f"(активных {stats_data['active']}, заблокировали {stats_data['blocked']})\n"
         f"📢 Канал для проверки: {channel}\n"
-        f"🔥 Шагов прогрева: {steps}\n\n"
-        "Выбери раздел:"
+        f"🔥 Активных шагов прогрева: {steps}\n\n"
+        "Выбери раздел 👇"
     )
 
 
@@ -56,4 +58,5 @@ router.include_router(material.router)
 router.include_router(settings.router)
 router.include_router(stats.router)
 router.include_router(broadcast.router)
+router.include_router(capture.router)  # перехватывает медиа мимо сценария — до общей подсказки
 router.include_router(fallback.router)  # всегда последним

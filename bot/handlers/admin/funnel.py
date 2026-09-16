@@ -25,9 +25,9 @@ router = Router(name="admin-funnel")
 
 HINT = (
     "🔥 <b>Прогрев</b>\n\n"
-    "Сообщения уходят автоматически после того, как человек получил материал.\n"
-    "Время считается от момента выдачи материала.\n"
-    "🔒 — шаг уйдёт только подписчику канала (для доступов и закрытых материалов)."
+    "Цепочка сообщений, которая уходит сама по расписанию — отсчитывая время от момента, "
+    "когда человек получил материал.\n\n"
+    "🔒 — шаг уйдёт только тем, кто подписан на канал (для доступов и закрытых материалов)."
 )
 
 
@@ -45,7 +45,8 @@ async def funnel_screen(target, deps) -> None:
     rows.append([("▶️ Прогнать на себе", "a:fun:test")])
     rows.append([("⬇️ Экспорт", "a:fun:exp"), ("⬆️ Импорт", "a:fun:imp")])
     rows.append([("⬅️ Назад", "a:menu")])
-    text = HINT + "\n\n" + ("\n".join(lines) if lines else "Шагов пока нет.")
+    body = "\n".join(lines) if lines else "Шагов пока нет — жми «➕ Добавить шаг»."
+    text = HINT + "\n\n" + body
     await show(target, text, kb(rows))
 
 
@@ -73,13 +74,13 @@ async def step_screen(target, deps, step_id: int) -> None:
         await show(target, "Шаг не найден.", kb([[("⬅️ К прогреву", "a:fun")]]))
         return
     text = (
-        f"<b>Шаг</b>\n\n"
-        f"⏱ Задержка: {human_delay(step['delay_seconds'])}\n"
-        f"🔒 Только для подписчиков: {'да' if step['requires_subscription'] else 'нет'}\n"
+        f"🔥 <b>Шаг прогрева</b>\n\n"
+        f"⏱ Через: {human_delay(step['delay_seconds'])}\n"
+        f"⚡️ Статус: {'включён' if step['enabled'] else 'выключен'}\n"
+        f"🔒 Только подписчикам: {'да' if step['requires_subscription'] else 'нет'}\n\n"
         f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
-        f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n"
-        f"⚡️ Статус: {'включён' if step['enabled'] else 'выключен'}\n\n"
-        f"{step['text'] or '<i>без текста</i>'}"
+        f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
+        f"Текст:\n{step['text'] or '<i>без текста</i>'}"
     )
     await show(
         target,
@@ -161,7 +162,8 @@ async def cb_step_delay(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(step_id=step_id)
     await show(
         call,
-        "Через сколько после выдачи материала слать этот шаг?\n"
+        "⏱ <b>Задержка шага</b>\n\n"
+        "Через сколько после выдачи материала слать этот шаг?\n\n"
         "Примеры: <code>30м</code>, <code>2ч</code>, <code>3д</code>, <code>1д 4ч</code>.",
         kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
     )
@@ -177,7 +179,6 @@ async def on_step_delay(message: Message, state: FSMContext, deps) -> None:
     data = await state.get_data()
     await deps.funnel.update_step(data["step_id"], delay_seconds=seconds)
     await state.clear()
-    await message.answer(f"Задержка: {human_delay(seconds)} ✅")
     await step_screen(message, deps, data["step_id"])
 
 
@@ -189,7 +190,8 @@ async def cb_step_add(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(FunnelAdd.waiting_delay)
     await show(
         call,
-        "Через сколько после выдачи материала слать этот шаг?\n"
+        "➕ <b>Новый шаг прогрева</b>\n\n"
+        "Через сколько после выдачи материала слать этот шаг?\n\n"
         "Примеры: <code>30м</code>, <code>2ч</code>, <code>3д</code>, <code>1д 4ч</code>.",
         kb([[("⬅️ Отмена", "a:fun")]]),
     )
@@ -236,7 +238,6 @@ async def on_add_buttons(message: Message, state: FSMContext, deps) -> None:
         buttons=buttons,
     )
     await state.clear()
-    await message.answer("Шаг добавлен ✅")
     await funnel_screen(message, deps)
 
 
@@ -271,8 +272,9 @@ async def cb_funnel_import(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(FunnelImport.waiting_file)
     await show(
         call,
+        "⬆️ <b>Импорт прогрева</b>\n\n"
         "Пришли файл <code>funnel.json</code>.\n\n"
-        "⚠️ Текущая цепочка будет заменена целиком, очередь отправок сбросится.\n"
+        "⚠️ Текущая цепочка будет заменена целиком, очередь отправок сбросится.\n\n"
         "Медиа подтянется по именам из медиатеки — залей файлы заранее.",
         kb([[("⬅️ Отмена", "a:fun")]]),
     )
@@ -284,10 +286,9 @@ async def on_funnel_import(message: Message, state: FSMContext, deps) -> None:
     file = await message.bot.get_file(message.document.file_id)
     buffer = await message.bot.download_file(file.file_path)
     try:
-        count = await deps.funnel.import_json(buffer.read().decode("utf-8"), deps.media)
+        await deps.funnel.import_json(buffer.read().decode("utf-8"), deps.media)
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
         await message.answer(f"Не смог разобрать файл: {exc}")
         return
     await state.clear()
-    await message.answer(f"Импортировал шагов: {count} ✅")
     await funnel_screen(message, deps)

@@ -18,6 +18,7 @@ ROUTER_MODULES = [
     "bot.handlers.admin.settings",
     "bot.handlers.admin.stats",
     "bot.handlers.admin.broadcast",
+    "bot.handlers.admin.capture",
     "bot.handlers.admin.fallback",
     "bot.handlers.admin",
     "bot.handlers.user",

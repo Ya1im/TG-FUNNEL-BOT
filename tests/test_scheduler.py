@@ -163,8 +163,9 @@ async def test_tick_calls_hooks(db):
     scheduler, _, _, _ = await build(db)
     scheduler.broadcast_hook = lambda: _record(calls, "broadcast")
     scheduler.backup_hook = lambda: _record(calls, "backup")
+    scheduler.stats_export_hook = lambda: _record(calls, "stats_export")
     await scheduler.tick()
-    assert calls == ["broadcast", "backup"]
+    assert calls == ["broadcast", "backup", "stats_export"]
 
 
 async def _record(calls, name):

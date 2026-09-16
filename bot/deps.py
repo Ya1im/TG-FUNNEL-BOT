@@ -33,14 +33,14 @@ class Deps:
 
     @classmethod
     def build(cls, config: Config, db: Database, bot) -> "Deps":
-        users = UsersRepo(db)
+        users = UsersRepo(db, admin_ids=config.admin_ids)
         settings = SettingsRepo(db)
         return cls(
             config=config,
             db=db,
             users=users,
             media=MediaRepo(db),
-            funnel=FunnelRepo(db),
+            funnel=FunnelRepo(db, admin_ids=config.admin_ids),
             material=MaterialRepo(db),
             settings=settings,
             gate=ChannelGate(bot, settings, users),

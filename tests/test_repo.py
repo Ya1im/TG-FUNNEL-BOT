@@ -64,6 +64,14 @@ async def test_reset_clears_progress(db):
     assert await db.fetchval("SELECT COUNT(*) FROM user_steps WHERE user_id = 1") == 0
 
 
+async def test_export_rows_excludes_admin(db):
+    users = UsersRepo(db, admin_ids=(999,))
+    await users.upsert(1, "vasya", "Вася")
+    await users.upsert(999, "admin", "Админ")
+    rows = await users.export_rows()
+    assert [r["tg_id"] for r in rows] == [1]
+
+
 async def test_stats_and_csv(db):
     users = UsersRepo(db)
     await users.upsert(1, "vasya", "Вася", source="ig")
@@ -72,6 +80,51 @@ async def test_stats_and_csv(db):
     assert stats["total"] == 1 and stats["subscribed"] == 1
     csv_bytes = await users.export_csv()
     assert "vasya" in csv_bytes.decode("utf-8-sig")
+
+
+async def test_admin_excluded_from_stats_sources_and_segments(db):
+    users = UsersRepo(db, admin_ids=(999,))
+    await users.upsert(1, "vasya", "Вася", source="ig")
+    await users.upsert(999, "admin", "Админ", source="ig")
+    await users.set_subscription(999, True)
+    await users.mark_material_sent(999)
+
+    stats = await users.stats()
+    assert stats["total"] == 1
+    assert stats["subscribed"] == 0
+    assert stats["got_material"] == 0
+
+    sources = dict(await users.sources())
+    assert sources.get("ig") == 1
+
+    assert await users.segment_ids("all") == [1]
+    assert 999 not in await users.segment_ids("source", "ig")
+
+
+async def test_reset_all_stats_wipes_users_and_queue_keeps_content(db):
+    from bot.repo.media import MediaRepo
+
+    users = UsersRepo(db)
+    media = MediaRepo(db)
+    await users.upsert(1, "vasya", "Вася")
+    await db.execute(
+        "INSERT INTO user_steps(user_id, step_id, due_at) VALUES(1, 1, 0)"
+    )
+    await db.execute(
+        "INSERT INTO broadcasts(created_at, messages_json) VALUES(0, '[]')"
+    )
+    await db.execute(
+        "INSERT INTO broadcast_targets(broadcast_id, user_id) VALUES(1, 1)"
+    )
+    await media.save("krug", "video_note", "FILE_1")
+
+    await users.reset_all_stats()
+
+    assert await db.fetchval("SELECT COUNT(*) FROM users") == 0
+    assert await db.fetchval("SELECT COUNT(*) FROM user_steps") == 0
+    assert await db.fetchval("SELECT COUNT(*) FROM broadcasts") == 0
+    assert await db.fetchval("SELECT COUNT(*) FROM broadcast_targets") == 0
+    assert await media.count() == 1
 
 
 async def test_settings_defaults_and_override(db):

@@ -28,7 +28,7 @@ ssh "${SSH_OPTS[@]}" "$SERVER" '
   docker compose version >/dev/null 2>&1 || { echo "   Ставлю docker compose plugin…"; apt-get update -qq && apt-get install -y -qq docker-compose-plugin; }
 '
 
-echo "▶️  Заливаю код в $SERVER:$REMOTE_DIR…"
+echo "▶️  Заливаю код в $SERVER:$REMOTE_DIR ..."
 ssh "${SSH_OPTS[@]}" "$SERVER" "mkdir -p '$REMOTE_DIR'"
 rsync -az --delete \
   -e "ssh ${SSH_OPTS[*]}" \

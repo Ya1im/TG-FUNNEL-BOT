@@ -28,18 +28,19 @@ TEXT_KEYS = {
 async def settings_screen(target, deps) -> None:
     data = await deps.settings.all()
     note_id = data.get("welcome_note_media_id") or ""
-    note = "не задан"
+    note = "не задано"
     if note_id.isdigit():
         row = await deps.media.get(int(note_id))
         if row:
             note = f"{row['slug']} ({KIND_TITLES.get(row['kind'], row['kind'])})"
+    title = f" — {data['channel_title']}" if data.get("channel_title") else ""
     text = (
         "⚙️ <b>Настройки</b>\n\n"
-        f"📢 Канал для проверки: <code>{data.get('channel_id') or 'не задан'}</code>"
-        f"{' — ' + data['channel_title'] if data.get('channel_title') else ''}\n"
+        "Каналы, приветствие и все тексты, которые бот показывает пользователям.\n\n"
+        f"📢 Канал для проверки: <code>{data.get('channel_id') or 'не задан'}</code>{title}\n"
         f"🔗 Ссылка на канал: {data.get('channel_url') or 'не задана'}\n"
-        f"🔒 Закрытый канал: <code>{data.get('private_channel_id') or 'не задан'}</code>\n"
-        f"⭕️ Кружок приветствия: {note}\n"
+        f"🔒 Закрытый канал: <code>{data.get('private_channel_id') or 'не задан'}</code>\n\n"
+        f"👋 Приветствие: {note}"
     )
     await show(
         target,
@@ -48,7 +49,7 @@ async def settings_screen(target, deps) -> None:
             [
                 [("📢 Канал для проверки", "a:set:channel")],
                 [("🔒 Закрытый канал", "a:set:private")],
-                [("⭕️ Кружок приветствия", "a:set:note")],
+                [("👋 Приветствие", "a:set:note")],
                 [("✏️ Тексты и кнопки", "a:set:texts")],
                 [("⬅️ Назад", "a:menu")],
             ]
@@ -71,9 +72,12 @@ async def cb_channel(call: CallbackQuery, state: FSMContext) -> None:
     field = "private" if call.data.endswith("private") else "channel"
     await state.set_state(ChannelSet.waiting_value)
     await state.update_data(field=field)
-    what = "закрытый канал (куда выдаём доступ)" if field == "private" else "канал для проверки подписки"
+    is_private = field == "private"
+    title = "🔒 Закрытый канал" if is_private else "📢 Канал для проверки"
+    what = "закрытый канал (куда выдаём доступ)" if is_private else "канал для проверки подписки"
     await show(
         call,
+        f"{title}\n\n"
         f"Пришли {what}: <code>@username</code>, числовой ID вида <code>-100…</code> "
         "или просто перешли сюда любой пост из этого канала.\n\n"
         "⚠️ Бот должен быть администратором канала — иначе Telegram не даст проверять подписку.\n\n"
@@ -101,7 +105,6 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
             await deps.settings.set("channel_url", "")
             await deps.settings.set("channel_title", "")
         await state.clear()
-        await message.answer("Очистил ✅")
         await settings_screen(message, deps)
         return
 
@@ -159,7 +162,6 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
         await deps.settings.set("channel_url", url)
         await deps.settings.set("channel_title", chat.title or "")
     await state.clear()
-    await message.answer(f"Канал сохранён: {chat.title} (<code>{chat.id}</code>) ✅")
     await settings_screen(message, deps)
 
 
@@ -194,8 +196,9 @@ async def cb_note(call: CallbackQuery, deps) -> None:
     rows.append([("⬅️ Назад", "a:set")])
     await show(
         call,
-        "Что отправлять первым сообщением на /start?\n"
-        "Обычно это кружок. Если нужного файла нет — сначала залей его в медиатеку.",
+        "👋 <b>Приветствие</b>\n\n"
+        "Это первое, что видит человек после /start — обычно кружок, но подойдёт любое медиа.\n\n"
+        "Нет нужного файла в списке — сначала залей его в 🎬 Медиатеку.",
         kb(rows),
     )
     await call.answer()
@@ -218,7 +221,13 @@ async def cb_texts(call: CallbackQuery, deps) -> None:
     rows = [[(label, f"a:set:t:{key}")] for key, label in TEXT_KEYS.items()]
     rows.append([("⬅️ Назад", "a:set")])
     lines = [f"• <b>{label}</b>: {preview(data.get(key), 40)}" for key, label in TEXT_KEYS.items()]
-    await show(call, "✏️ <b>Тексты и кнопки</b>\n\n" + "\n".join(lines), kb(rows))
+    await show(
+        call,
+        "✏️ <b>Тексты и кнопки</b>\n\n"
+        "Все подписи и сообщения, которые бот шлёт пользователям в сценарии. "
+        "Жми на пункт, чтобы поменять.\n\n" + "\n".join(lines),
+        kb(rows),
+    )
     await call.answer()
 
 
@@ -233,8 +242,10 @@ async def cb_text_edit(call: CallbackQuery, deps, state: FSMContext) -> None:
     await state.update_data(key=key)
     await show(
         call,
-        f"<b>{TEXT_KEYS[key]}</b>\n\nСейчас:\n{current or '<i>пусто</i>'}\n\nПришли новый текст.\n"
-        "В тексте можно использовать <code>{name}</code> — подставится имя пользователя.",
+        f"✏️ <b>{TEXT_KEYS[key]}</b>\n\n"
+        f"Сейчас:\n{current or '<i>пусто</i>'}\n\n"
+        "Пришли новый текст.\n\n"
+        "Подсказка: <code>{name}</code> в тексте подставится именем пользователя.",
         kb([[("⬅️ Отмена", "a:set:texts")]]),
     )
     await call.answer()
@@ -249,5 +260,4 @@ async def on_text_value(message: Message, state: FSMContext, deps) -> None:
     data = await state.get_data()
     await deps.settings.set(data["key"], text)
     await state.clear()
-    await message.answer("Сохранил ✅")
     await settings_screen(message, deps)
