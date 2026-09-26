@@ -108,3 +108,12 @@ class BroadcastsRepo:
 
     async def cancel(self, broadcast_id: int) -> None:
         await self.set_status(broadcast_id, "cancelled")
+
+    async def delete(self, broadcast_id: int) -> bool:
+        """Удаляет рассылку вместе с получателями. Идущую прямо сейчас — нельзя."""
+        row = await self.get(broadcast_id)
+        if row is None or row["status"] == "running":
+            return False
+        await self.db.execute("DELETE FROM broadcast_targets WHERE broadcast_id = ?", (broadcast_id,))
+        await self.db.execute("DELETE FROM broadcasts WHERE id = ?", (broadcast_id,))
+        return True

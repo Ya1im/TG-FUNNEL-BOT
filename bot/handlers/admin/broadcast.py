@@ -55,18 +55,84 @@ def fmt_time(ts: int | None) -> str:
     return datetime.fromtimestamp(ts, TZ).strftime("%d.%m %H:%M")
 
 
+STATUS_LABELS = {
+    "draft": "черновик",
+    "queued": "запланирована",
+    "running": "идёт",
+    "done": "завершена",
+    "cancelled": "отменена",
+}
+
+
 async def broadcast_screen(target, deps) -> None:
-    recent = await deps.broadcasts.recent(limit=5)
+    recent = await deps.broadcasts.recent(limit=8)
     lines = []
+    rows = []
     for row in recent:
         stats = await deps.broadcasts.stats(row["id"])
         when = fmt_time(row["scheduled_at"] or row["created_at"])
+        status = STATUS_LABELS.get(row["status"], row["status"])
         lines.append(
-            f"#{row['id']} {when} — {row['status']}: отправлено {stats['sent']}, "
+            f"#{row['id']} {when} — {status}: отправлено {stats['sent']}, "
             f"заблокировали {stats['blocked']}, ошибок {stats['failed']}"
         )
-    text = HINT + "\n\n<b>Последние рассылки:</b>\n" + ("\n".join(lines) if lines else "пока не было")
-    await show(target, text, kb([[("➕ Новая рассылка", "a:bc:new")], [("⬅️ Назад", "a:menu")]]))
+        rows.append([(f"📨 #{row['id']} · {when} · {status}", f"a:bc:o:{row['id']}")])
+    text = HINT + "\n\n<b>Последние рассылки</b> (нажми, чтобы открыть или удалить):\n" + (
+        "\n".join(lines) if lines else "пока не было"
+    )
+    rows = [[("➕ Новая рассылка", "a:bc:new")]] + rows + [[("⬅️ Назад", "a:menu")]]
+    await show(target, text, kb(rows))
+
+
+async def broadcast_card(target, deps, broadcast_id: int) -> None:
+    row = await deps.broadcasts.get(broadcast_id)
+    if row is None:
+        await broadcast_screen(target, deps)
+        return
+    stats = await deps.broadcasts.stats(broadcast_id)
+    messages = await deps.broadcasts.messages(broadcast_id)
+    label = dict(SEGMENTS).get(row["segment"], row["segment"])
+    text = (
+        f"📨 <b>Рассылка #{broadcast_id}</b> — {STATUS_LABELS.get(row['status'], row['status'])}\n\n"
+        f"Сообщений: {len(messages)}\n"
+        f"Получатели: {label} — {stats['total']}\n"
+        f"Отправлено {stats['sent']}, заблокировали {stats['blocked']}, ошибок {stats['failed']}"
+    )
+    rows = [[("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")]]
+    if row["status"] in ("draft", "queued"):
+        rows.append([("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")])
+        rows.append([("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")])
+    if row["status"] != "running":
+        rows.append([("🗑 Удалить", f"a:bc:del:{broadcast_id}")])
+    rows.append([("⬅️ К списку", "a:bc")])
+    await show(target, text, kb(rows))
+
+
+@router.callback_query(F.data.startswith("a:bc:o:"))
+async def cb_open(call: CallbackQuery, deps) -> None:
+    await broadcast_card(call, deps, int(call.data.split(":")[-1]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:del:"))
+async def cb_delete_ask(call: CallbackQuery, deps) -> None:
+    broadcast_id = int(call.data.split(":")[-1])
+    await show(
+        call,
+        f"🗑 Удалить рассылку #{broadcast_id}? Вернуть её будет нельзя.",
+        kb([[("🗑 Да, удалить", f"a:bc:delok:{broadcast_id}")], [("✖️ Нет", f"a:bc:o:{broadcast_id}")]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:delok:"))
+async def cb_delete_do(call: CallbackQuery, deps) -> None:
+    broadcast_id = int(call.data.split(":")[-1])
+    if await deps.broadcasts.delete(broadcast_id):
+        await call.answer("Удалил")
+    else:
+        await call.answer("Идущую рассылку удалить нельзя", show_alert=True)
+    await broadcast_screen(call, deps)
 
 
 @router.callback_query(F.data == "a:bc")
@@ -363,7 +429,7 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
                 [("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")],
                 [("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")],
                 [("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")],
-                [("✖️ Отменить", f"a:bc:x:{broadcast_id}")],
+                [("🗑 Удалить", f"a:bc:del:{broadcast_id}")],
             ]
         ),
     )

@@ -128,3 +128,27 @@ async def test_progress_callback_receives_stats(db):
 
 async def _collect(seen, stats):
     seen.append(stats)
+
+
+async def test_delete_removes_broadcast_and_targets(db):
+    users, repo = await setup(db)
+    engine = BroadcastEngine(FakeBot(), users, repo)
+    keep, _ = await engine.prepare(99, "all", MESSAGES)
+    drop, _ = await engine.prepare(99, "all", MESSAGES)
+
+    assert await repo.delete(drop) is True
+
+    assert await repo.get(drop) is None
+    assert await repo.pending_targets(drop) == []
+    assert await repo.get(keep) is not None
+    assert await repo.pending_targets(keep) != []
+
+
+async def test_delete_refuses_running_broadcast(db):
+    users, repo = await setup(db)
+    engine = BroadcastEngine(FakeBot(), users, repo)
+    bid, _ = await engine.prepare(99, "all", MESSAGES)
+    await repo.set_status(bid, "running")
+
+    assert await repo.delete(bid) is False
+    assert await repo.get(bid) is not None
