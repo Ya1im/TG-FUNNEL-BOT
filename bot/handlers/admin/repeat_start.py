@@ -11,22 +11,18 @@ from bot.handlers.admin.common import (
     RepeatStartAdd,
     buttons_hint,
     capture_content,
+    item_label,
     kb,
     parse_buttons,
     preview,
     safe_excerpt,
+    screen_text,
     show,
 )
 
 router = Router(name="admin-repeat-start")
 
-HINT = (
-    "🔁 <b>Повторный /start</b>\n\n"
-    "Что бот шлёт, если человек уже получил материал и снова жмёт /start. "
-    "Можно добавить сколько угодно сообщений любого формата (текст, фото, видео, "
-    "кружок, документ и т.п.) с кнопками-ссылками — уйдут по порядку, друг за другом.\n\n"
-    "Если не добавить ни одного блока — на повторный /start бот не пришлёт ничего."
-)
+HINT = "Уходит тем, кто уже получил материал и снова жмёт /start. Пусто — бот молчит."
 
 
 async def repeat_start_screen(target, deps) -> None:
@@ -34,22 +30,20 @@ async def repeat_start_screen(target, deps) -> None:
     rows = [[("➕ Добавить блок", "a:rst:add")]]
     lines = []
     for index, block in enumerate(blocks, start=1):
-        media = f" [{block['media_slug']}]" if block["media_slug"] else ""
-        mark = "" if block["enabled"] else " (выключен)"
-        lines.append(f"{index}. {preview(block['text'])}{media}{mark}")
+        mark = "" if block["enabled"] else " ⏸"
+        lines.append(f"{index}. {item_label(block['text'], block['media_kind'])}{mark}")
         rows.append(
             [
-                (f"{index}. {preview(block['text'], 20)}", f"a:rst:s:{block['id']}"),
+                (f"{index}. {item_label(block['text'], block['media_kind'], 16)}", f"a:rst:s:{block['id']}"),
                 ("⬆️", f"a:rst:up:{block['id']}"),
                 ("🗑", f"a:rst:del:{block['id']}"),
             ]
         )
     if blocks:
         rows.append([("👁 Показать целиком", "a:rst:prev")])
-    rows.append([("⬅️ Назад", "a:set")])
+    rows.append([("⬅️ Назад", "a:flow")])
     body = "\n".join(lines) if lines else "Блоков пока нет — на повторный /start бот молчит."
-    text = HINT + "\n\n" + body
-    await show(target, text, kb(rows))
+    await show(target, screen_text("🔁 Повторный /start", HINT, body), kb(rows))
 
 
 @router.callback_query(F.data == "a:rst")

@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.repo.media import KIND_TITLES
+from bot.handlers.admin.flow import hello_screen, subscription_screen
 from bot.handlers.admin.common import (
     ChannelSet,
     SettingEdit,
@@ -14,6 +15,7 @@ from bot.handlers.admin.common import (
     message_text,
     preview,
     safe_excerpt,
+    screen_text,
     show,
 )
 
@@ -37,33 +39,42 @@ TEXT_KEYS = {
 }
 
 
+TEXT_GROUPS = {
+    "hello": ("👋 Приветствие и меню", ["menu_text"], "a:flow:hi"),
+    "sub": (
+        "📢 Проверка подписки",
+        [
+            "btn_subscribe", "btn_check", "not_subscribed_alert", "subscribed_ok_alert",
+            "reminder_text", "resub_reminder_text", "gate_retry_hours", "gate_max_attempts",
+        ],
+        "a:flow:sub",
+    ),
+    "material": ("🎁 Материал и закрытый канал", ["material_intro", "private_text", "btn_private"], "a:flow"),
+}
+
+
+def _group_of(key: str) -> str:
+    for name, (_, keys, _) in TEXT_GROUPS.items():
+        if key in keys:
+            return name
+    return "hello"
+
+
 async def settings_screen(target, deps) -> None:
-    data = await deps.settings.all()
-    note_id = data.get("welcome_note_media_id") or ""
-    note = "не задано"
-    if note_id.isdigit():
-        row = await deps.media.get(int(note_id))
-        if row:
-            note = f"{row['slug']} ({KIND_TITLES.get(row['kind'], row['kind'])})"
-    title = f" — {data['channel_title']}" if data.get("channel_title") else ""
-    text = (
-        "⚙️ <b>Настройки</b>\n\n"
-        "Каналы, приветствие и все тексты, которые бот показывает пользователям.\n\n"
-        f"📢 Канал для проверки: <code>{data.get('channel_id') or 'не задан'}</code>{title}\n"
-        f"🔗 Ссылка на канал: {data.get('channel_url') or 'не задана'}\n"
-        f"🔒 Закрытый канал: <code>{data.get('private_channel_id') or 'не задан'}</code>\n\n"
-        f"👋 Приветствие: {note}"
+    media_total = await deps.media.count()
+    report = (await deps.settings.get("report_chat_id")).strip()
+    body = (
+        f"🎬 Медиатека: {media_total} файл(ов)\n"
+        f"📤 Чат для отчётов: {('<code>%s</code>' % report) if report else 'не задан'}"
     )
     await show(
         target,
-        text,
+        screen_text("⚙️ Настройки", "Общее для всего бота. Шаги воронки — в разделе «Воронка».", body),
         kb(
             [
-                [("📢 Канал для проверки", "a:set:channel")],
-                [("🔒 Закрытый канал", "a:set:private")],
-                [("👋 Приветствие", "a:set:note")],
-                [("✏️ Тексты и кнопки", "a:set:texts")],
-                [("🔁 Повторный /start", "a:rst")],
+                [("🎬 Медиатека", "a:media")],
+                [("✏️ Все тексты и кнопки", "a:set:texts")],
+                [("📤 Чат для отчётов", "a:set:report")],
                 [("⬅️ Назад", "a:menu")],
             ]
         ),
@@ -95,7 +106,7 @@ async def cb_channel(call: CallbackQuery, state: FSMContext) -> None:
         "или просто перешли сюда любой пост из этого канала.\n\n"
         "⚠️ Бот должен быть администратором канала — иначе Telegram не даст проверять подписку.\n\n"
         "Чтобы очистить — отправь <code>-</code>",
-        kb([[("⬅️ Отмена", "a:set")]]),
+        kb([[("⬅️ Отмена", "a:flow:sub")]]),
     )
     await call.answer()
 
@@ -118,7 +129,7 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
             await deps.settings.set("channel_url", "")
             await deps.settings.set("channel_title", "")
         await state.clear()
-        await settings_screen(message, deps)
+        await subscription_screen(message, deps)
         return
 
     if isinstance(raw, str) and not raw.lstrip("-").isdigit() and not raw.startswith("@"):
@@ -145,7 +156,7 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
             "Пришли <code>@username</code> своего канала. Если канал приватный и username у него нет — "
             "перешли сюда любой пост из канала (в настройках канала должно быть разрешено "
             "показывать отправителя) либо пришли числовой id вида <code>-100…</code>.",
-            reply_markup=kb([[("⬅️ Отмена", "a:set")]]),
+            reply_markup=kb([[("⬅️ Отмена", "a:flow:sub")]]),
         )
         return
 
@@ -165,7 +176,7 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
             "Проверь в канале: Управление → Администраторы — там должен быть именно "
             f"@{me.username}.\n\n"
             "Если уверен, что всё верно — сохрани как есть, проверку подписки потом протестируем.",
-            reply_markup=kb([[("💾 Сохранить всё равно", "a:set:force")], [("⬅️ Отмена", "a:set")]]),
+            reply_markup=kb([[("💾 Сохранить всё равно", "a:set:force")], [("⬅️ Отмена", "a:flow:sub")]]),
         )
         return
 
@@ -175,7 +186,7 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
         await deps.settings.set("channel_url", url)
         await deps.settings.set("channel_title", chat.title or "")
     await state.clear()
-    await settings_screen(message, deps)
+    await subscription_screen(message, deps)
 
 
 @router.callback_query(F.data == "a:set:force")
@@ -193,7 +204,7 @@ async def cb_channel_force(call: CallbackQuery, state: FSMContext, deps) -> None
         await deps.settings.set("channel_title", data.get("pending_title", ""))
     await state.clear()
     await call.answer("Сохранил")
-    await settings_screen(call, deps)
+    await subscription_screen(call, deps)
 
 
 # --- кружок приветствия ---------------------------------------------------
@@ -206,7 +217,7 @@ async def cb_note(call: CallbackQuery, deps) -> None:
         rows.append(
             [(f"{row['slug']} ({KIND_TITLES.get(row['kind'], row['kind'])})", f"a:set:note:{row['id']}")]
         )
-    rows.append([("⬅️ Назад", "a:set")])
+    rows.append([("⬅️ Назад", "a:flow:hi")])
     await show(
         call,
         "👋 <b>Приветствие</b>\n\n"
@@ -222,7 +233,7 @@ async def cb_note_set(call: CallbackQuery, deps) -> None:
     media_id = int(call.data.split(":")[-1])
     await deps.settings.set("welcome_note_media_id", "" if media_id == 0 else str(media_id))
     await call.answer("Сохранил")
-    await settings_screen(call, deps)
+    await hello_screen(call, deps)
 
 
 # --- тексты ---------------------------------------------------------------
@@ -230,18 +241,50 @@ async def cb_note_set(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data == "a:set:texts")
 async def cb_texts(call: CallbackQuery, deps) -> None:
-    data = await deps.settings.all()
-    rows = [[(label, f"a:set:t:{key}")] for key, label in TEXT_KEYS.items()]
+    rows = [[(f"{title} · {len(keys)}", f"a:set:texts:{name}")] for name, (title, keys, _) in TEXT_GROUPS.items()]
     rows.append([("⬅️ Назад", "a:set")])
-    lines = [f"• <b>{label}</b>: {preview(data.get(key), 40)}" for key, label in TEXT_KEYS.items()]
     await show(
         call,
-        "✏️ <b>Тексты и кнопки</b>\n\n"
-        "Все подписи и сообщения, которые бот шлёт пользователям в сценарии. "
-        "Жми на пункт, чтобы поменять.\n\n" + "\n".join(lines),
+        screen_text("✏️ Тексты и кнопки", "Всё, что бот пишет людям. Выбери группу."),
         kb(rows),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:set:texts:"))
+async def cb_text_group(call: CallbackQuery, deps, state: FSMContext) -> None:
+    await state.clear()
+    name = call.data.split(":")[-1]
+    if name not in TEXT_GROUPS:
+        await call.answer("Нет такой группы", show_alert=True)
+        return
+    title, keys, _ = TEXT_GROUPS[name]
+    data = await deps.settings.all()
+    rows = [[(TEXT_KEYS[key], f"a:set:t:{key}")] for key in keys]
+    rows.append([("⬅️ Назад", "a:flow:sub" if name == "sub" else "a:set:texts")])
+    lines = [f"• <b>{TEXT_KEYS[key]}</b>: {preview(data.get(key), 40)}" for key in keys]
+    await show(call, screen_text(title, "Жми на пункт, чтобы поменять.", "\n".join(lines)), kb(rows))
+    await call.answer()
+
+
+async def _open_edit(call: CallbackQuery, deps, state: FSMContext, key: str, back: str) -> None:
+    current = await deps.settings.get(key)
+    await state.set_state(SettingEdit.waiting_value)
+    await state.update_data(key=key, back=back)
+    await show(
+        call,
+        f"✏️ <b>{TEXT_KEYS[key]}</b>\n\n"
+        f"Сейчас:\n{safe_excerpt(current) or '<i>пусто</i>'}\n\n"
+        "Пришли новый текст.\n\n"
+        "Подсказка: <code>{name}</code> в тексте подставится именем пользователя.",
+        kb([[("⬅️ Отмена", back)]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:flow:hi:txt")
+async def cb_menu_text_edit(call: CallbackQuery, deps, state: FSMContext) -> None:
+    await _open_edit(call, deps, state, "menu_text", "a:flow:hi")
 
 
 @router.callback_query(F.data.startswith("a:set:t:"))
@@ -250,18 +293,7 @@ async def cb_text_edit(call: CallbackQuery, deps, state: FSMContext) -> None:
     if key not in TEXT_KEYS:
         await call.answer("Неизвестная настройка", show_alert=True)
         return
-    current = await deps.settings.get(key)
-    await state.set_state(SettingEdit.waiting_value)
-    await state.update_data(key=key)
-    await show(
-        call,
-        f"✏️ <b>{TEXT_KEYS[key]}</b>\n\n"
-        f"Сейчас:\n{safe_excerpt(current) or '<i>пусто</i>'}\n\n"
-        "Пришли новый текст.\n\n"
-        "Подсказка: <code>{name}</code> в тексте подставится именем пользователя.",
-        kb([[("⬅️ Отмена", "a:set:texts")]]),
-    )
-    await call.answer()
+    await _open_edit(call, deps, state, key, f"a:set:texts:{_group_of(key)}")
 
 
 @router.message(SettingEdit.waiting_value)
@@ -272,5 +304,15 @@ async def on_text_value(message: Message, state: FSMContext, deps) -> None:
         return
     data = await state.get_data()
     await deps.settings.set(data["key"], text)
+    back = data.get("back", "a:set:texts")
     await state.clear()
-    await settings_screen(message, deps)
+    if back == "a:flow:hi":
+        await hello_screen(message, deps)
+        return
+    group = back.rsplit(":", 1)[-1]
+    title, keys, _ = TEXT_GROUPS.get(group, TEXT_GROUPS["hello"])
+    current = await deps.settings.all()
+    rows = [[(TEXT_KEYS[key], f"a:set:t:{key}")] for key in keys]
+    rows.append([("⬅️ Назад", "a:flow:sub" if group == "sub" else "a:set:texts")])
+    lines = [f"• <b>{TEXT_KEYS[key]}</b>: {preview(current.get(key), 40)}" for key in keys]
+    await show(message, screen_text(title, "Сохранил. Жми на пункт, чтобы поменять.", "\n".join(lines)), kb(rows))

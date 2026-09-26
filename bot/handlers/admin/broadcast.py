@@ -19,10 +19,12 @@ from bot.handlers.admin.common import (
     BroadcastNew,
     MenuRef,
     capture_content,
+    item_label,
     kb,
     parse_buttons,
     preview,
     safe_excerpt,
+    screen_text,
     show,
 )
 
@@ -40,13 +42,7 @@ SEGMENTS = [
     ("no_material", "Ещё не получили материал"),
 ]
 
-HINT = (
-    "📤 <b>Рассылка</b>\n\n"
-    "Пришли боту одно или несколько сообщений — текст, фото, видео, кружок, файл, "
-    "аудио, голосовое, гифка или стикер.\n\n"
-    "Дальше сможешь посмотреть список, поправить текст/медиа, добавить кнопки-ссылки "
-    "и только потом выбрать получателей."
-)
+HINT = "Соберите сообщения любого формата, поправьте, выберите получателей."
 
 
 def fmt_time(ts: int | None) -> str:
@@ -93,8 +89,8 @@ async def broadcast_screen(target, deps) -> None:
             f"#{row['id']} {when} — {status}: {_stats_line(stats)}"
         )
         rows.append([(f"📨 #{row['id']} · {when} · {status}", f"a:bc:o:{row['id']}")])
-    text = HINT + "\n\n<b>Последние рассылки</b> (нажми, чтобы открыть или удалить):\n" + (
-        "\n".join(lines) if lines else "пока не было"
+    text = screen_text(
+        "📤 Рассылки", HINT, "<b>Последние</b> (нажми — открыть или удалить):\n" + ("\n".join(lines) if lines else "пока не было")
     )
     rows = [[("➕ Новая рассылка", "a:bc:new")]] + rows + [[("⬅️ Назад", "a:menu")]]
     await show(target, text, kb(rows))
@@ -226,13 +222,12 @@ async def broadcast_draft_screen(target, state: FSMContext) -> None:
     rows = []
     lines = []
     for idx, item in enumerate(messages):
-        media = f" [{item['media_kind']}]" if item.get("media_kind") else ""
         n_buttons = len(item.get("buttons") or [])
-        btn_hint = f", кнопок: {n_buttons}" if n_buttons else ""
-        lines.append(f"{idx + 1}. {preview(item.get('text'))}{media}{btn_hint}")
+        btn_hint = f" · 🔘{n_buttons}" if n_buttons else ""
+        lines.append(f"{idx + 1}. {item_label(item.get('text'), item.get('media_kind'))}{btn_hint}")
         rows.append(
             [
-                (f"{idx + 1}. {preview(item.get('text'), 20)}", f"a:bc:d:{idx}"),
+                (f"{idx + 1}. {item_label(item.get('text'), item.get('media_kind'), 16)}", f"a:bc:d:{idx}"),
                 ("🗑", f"a:bc:ddel:{idx}"),
             ]
         )
@@ -241,8 +236,7 @@ async def broadcast_draft_screen(target, state: FSMContext) -> None:
         rows.append([("▶️ Дальше — выбрать получателей", "a:bc:tosend")])
     rows.append([("✖️ Отмена", "a:bc")])
     body = "\n".join(lines) if lines else "Сообщений пока нет — пришли хотя бы одно."
-    text = "📤 <b>Сбор рассылки</b>\n\n" + body
-    await show(target, text, kb(rows))
+    await show(target, screen_text("📤 Сбор рассылки", "Добавьте сообщения, потом «Дальше».", body), kb(rows))
 
 
 async def broadcast_item_screen(target, state: FSMContext, idx: int) -> None:

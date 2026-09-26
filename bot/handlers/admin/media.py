@@ -10,17 +10,11 @@ from aiogram.types import CallbackQuery, Message
 from bot.content import ContentBlock, extract_media
 from bot.repo.media import KIND_TITLES
 from bot.sender import send_block
-from bot.handlers.admin.common import MediaAdd, kb, show
+from bot.handlers.admin.common import KIND_ICONS, MediaAdd, kb, screen_text, show
 
 router = Router(name="admin-media")
 
-HINT = (
-    "🎬 <b>Медиатека</b>\n\n"
-    "Файлы, из которых собираются приветствие, материал и прогрев — фото, видео, кружки, "
-    "документы, аудио, голосовые, гифки.\n\n"
-    "Можно нажать «➕ Загрузить файл», а можно просто прислать файлы боту напрямую — "
-    "он сам предложит сохранить их сюда."
-)
+HINT = "Файлы для приветствия, материала и прогрева. Можно просто прислать файл боту — он предложит сохранить."
 
 
 async def media_screen(target, deps) -> None:
@@ -28,14 +22,13 @@ async def media_screen(target, deps) -> None:
     rows = [[("➕ Загрузить файл", "a:media:add")]]
     lines = []
     for row in items:
-        title = KIND_TITLES.get(row["kind"], row["kind"])
-        lines.append(f"• <code>{row['slug']}</code> — {title}")
-        rows.append([(f"{row['slug']} ({title})", f"a:media:s:{row['id']}")])
-    rows.append([("⬅️ Назад", "a:menu")])
+        icon = KIND_ICONS.get(row["kind"], "📎")
+        lines.append(f"{icon} <code>{row['slug']}</code>")
+        rows.append([(f"{icon} {row['slug']}", f"a:media:s:{row['id']}")])
+    rows.append([("⬅️ Назад", "a:set")])
     total = await deps.media.count()
     body = "\n".join(lines) if lines else "Пока пусто."
-    text = HINT + f"\n\nВсего файлов: {total}\n\n" + body
-    await show(target, text, kb(rows))
+    await show(target, screen_text(f"🎬 Медиатека · {total}", HINT, body), kb(rows))
 
 
 @router.callback_query(F.data == "a:media")

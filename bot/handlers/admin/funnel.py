@@ -16,20 +16,17 @@ from bot.handlers.admin.common import (
     FunnelImport,
     buttons_hint,
     capture_content,
+    item_label,
     kb,
     parse_buttons,
     preview,
+    screen_text,
     show,
 )
 
 router = Router(name="admin-funnel")
 
-HINT = (
-    "🔥 <b>Прогрев</b>\n\n"
-    "Цепочка сообщений, которая уходит сама по расписанию — отсчитывая время от момента, "
-    "когда человек получил материал.\n\n"
-    "🔒 — шаг уйдёт только тем, кто подписан на канал (для доступов и закрытых материалов)."
-)
+HINT = "Сообщения по расписанию после выдачи материала. 🔒 — только подписанным."
 
 
 async def funnel_screen(target, deps) -> None:
@@ -40,15 +37,17 @@ async def funnel_screen(target, deps) -> None:
         mark = "🔒" if step["requires_subscription"] else ""
         off = "" if step["enabled"] else "⏸"
         lines.append(
-            f"{index}. через {human_delay(step['delay_seconds'])} {mark}{off} — {preview(step['text'])}"
+            f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off} "
+            f"{item_label(step['text'], step['media_kind'], 30)}"
         )
-        rows.append([(f"{index}. {human_delay(step['delay_seconds'])} {mark}{off}", f"a:fun:s:{step['id']}")])
+        rows.append(
+            [(f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off}".strip(), f"a:fun:s:{step['id']}")]
+        )
     rows.append([("▶️ Прогнать на себе", "a:fun:test")])
     rows.append([("⬇️ Экспорт", "a:fun:exp"), ("⬆️ Импорт", "a:fun:imp")])
-    rows.append([("⬅️ Назад", "a:menu")])
+    rows.append([("⬅️ Назад", "a:flow")])
     body = "\n".join(lines) if lines else "Шагов пока нет — жми «➕ Добавить шаг»."
-    text = HINT + "\n\n" + body
-    await show(target, text, kb(rows))
+    await show(target, screen_text("🔥 Прогрев", HINT, body), kb(rows))
 
 
 @router.callback_query(F.data == "a:fun")
@@ -68,7 +67,7 @@ async def cb_step(call: CallbackQuery, deps) -> None:
     await call.answer()
 
 
-async def step_screen(target, deps, step_id: int) -> None:
+async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
     steps = {s["id"]: s for s in await deps.funnel.list_steps()}
     step = steps.get(step_id)
     if step is None:
@@ -89,24 +88,33 @@ async def step_screen(target, deps, step_id: int) -> None:
         f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
         f"Текст:\n{step['text'] or '<i>без текста</i>'}"
     )
-    await show(
-        target,
-        text,
-        kb(
+    if more:
+        markup = kb(
             [
-                [("⏱ Задержка", f"a:fun:delay:{step_id}"), ("👁 Показать", f"a:fun:prev:{step_id}")],
-                [("✏️ Текст/медиа", f"a:fun:ed:{step_id}"), ("🔘 Кнопки", f"a:fun:btn:{step_id}")],
-                [
-                    ("🔒 Подписка вкл/выкл", f"a:fun:gate:{step_id}"),
-                    ("⏸ Вкл/выкл", f"a:fun:tgl:{step_id}"),
-                ],
+                [("🔒 Подписка вкл/выкл", f"a:fun:gate:{step_id}")],
                 [("🔔 Если не подписан: напомнить/пропустить", f"a:fun:unsub:{step_id}")],
+                [("⏸ Вкл/выкл шаг", f"a:fun:tgl:{step_id}")],
                 [("⬆️ Выше", f"a:fun:up:{step_id}"), ("⬇️ Ниже", f"a:fun:dn:{step_id}")],
                 [("🗑 Удалить", f"a:fun:del:{step_id}")],
+                [("⬅️ К шагу", f"a:fun:s:{step_id}")],
+            ]
+        )
+    else:
+        markup = kb(
+            [
+                [("✏️ Текст/медиа", f"a:fun:ed:{step_id}"), ("🔘 Кнопки", f"a:fun:btn:{step_id}")],
+                [("⏱ Задержка", f"a:fun:delay:{step_id}"), ("👁 Показать", f"a:fun:prev:{step_id}")],
+                [("⋯ Ещё", f"a:fun:more:{step_id}")],
                 [("⬅️ К прогреву", "a:fun")],
             ]
-        ),
-    )
+        )
+    await show(target, text, markup)
+
+
+@router.callback_query(F.data.startswith("a:fun:more:"))
+async def cb_step_more(call: CallbackQuery, deps) -> None:
+    await step_screen(call, deps, int(call.data.split(":")[-1]), more=True)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith("a:fun:prev:"))
@@ -125,7 +133,7 @@ async def cb_step_gate(call: CallbackQuery, deps) -> None:
     step = await deps.funnel.get_step(step_id)
     await deps.funnel.update_step(step_id, requires_subscription=0 if step["requires_subscription"] else 1)
     await call.answer("Готово")
-    await step_screen(call, deps, step_id)
+    await step_screen(call, deps, step_id, more=True)
 
 
 @router.callback_query(F.data.startswith("a:fun:unsub:"))
@@ -134,7 +142,7 @@ async def cb_step_unsub(call: CallbackQuery, deps) -> None:
     step = await deps.funnel.get_step(step_id)
     await deps.funnel.update_step(step_id, on_unsub="skip" if step["on_unsub"] == "remind" else "remind")
     await call.answer("Готово")
-    await step_screen(call, deps, step_id)
+    await step_screen(call, deps, step_id, more=True)
 
 
 @router.callback_query(F.data.startswith("a:fun:tgl:"))
@@ -143,7 +151,7 @@ async def cb_step_toggle(call: CallbackQuery, deps) -> None:
     step = await deps.funnel.get_step(step_id)
     await deps.funnel.update_step(step_id, enabled=0 if step["enabled"] else 1)
     await call.answer("Готово")
-    await step_screen(call, deps, step_id)
+    await step_screen(call, deps, step_id, more=True)
 
 
 @router.callback_query(F.data.startswith("a:fun:up:"))

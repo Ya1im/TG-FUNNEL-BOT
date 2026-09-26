@@ -872,3 +872,137 @@ async def test_admin_toggles_unsub_reminder_of_funnel_step(stack):
     assert (await deps.funnel.get_step(step_id))["on_unsub"] == "remind"
     await feed(dp, bot, callback=make_callback(f"a:fun:unsub:{step_id}", user_id=ADMIN_ID))
     assert (await deps.funnel.get_step(step_id))["on_unsub"] == "skip"
+
+
+# --- структура админки: главное меню, «Воронка» по шагам, возвраты -----------------
+
+
+def _screen(session):
+    shown = [r for r in session.requests if type(r).__name__ in ("EditMessageText", "SendMessage")]
+    last = shown[-1]
+    return last.text, last.reply_markup
+
+
+def _callbacks(markup):
+    return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
+
+
+async def _open(dp, bot, session, data):
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(data, user_id=ADMIN_ID))
+    return _screen(session)
+
+
+async def test_admin_main_menu_has_four_sections(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    _, markup = _screen(session)
+    assert _callbacks(markup) == ["a:flow", "a:bc", "a:stat", "a:set"]
+
+
+async def test_main_menu_shows_what_is_left_to_configure(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    text, _ = _screen(session)
+    assert "Осталось настроить" in text
+
+    media_id = await deps.media.save("krug", "video_note", "F")
+    await deps.settings.set("welcome_note_media_id", str(media_id))
+    await deps.settings.set("channel_id", "-1001")
+    await deps.material.add_block(text="Материал")
+    await deps.funnel.add_step(60, text="Шаг")
+    text, _ = await _open(dp, bot, session, "a:menu")
+    assert "Осталось настроить" not in text
+    assert "Воронка настроена" in text
+
+
+async def test_flow_hub_shows_subscriber_path_in_order(stack):
+    dp, bot, session, deps = stack
+    text, markup = await _open(dp, bot, session, "a:flow")
+    order = ["Приветствие", "Проверка подписки", "Материал", "Прогрев", "Повторный /start"]
+    positions = [text.index(name) for name in order]
+    assert positions == sorted(positions)
+    assert _callbacks(markup) == ["a:flow:hi", "a:flow:sub", "a:mat", "a:fun", "a:rst", "a:menu"]
+
+
+async def test_settings_holds_only_general_things(stack):
+    dp, bot, session, deps = stack
+    _, markup = await _open(dp, bot, session, "a:set")
+    cbs = _callbacks(markup)
+    assert cbs == ["a:media", "a:set:texts", "a:set:report", "a:menu"]
+
+
+async def test_flow_steps_return_to_flow_and_media_to_settings(stack):
+    dp, bot, session, deps = stack
+    for opener in ("a:mat", "a:fun", "a:rst", "a:flow:hi", "a:flow:sub"):
+        _, markup = await _open(dp, bot, session, opener)
+        assert _callbacks(markup)[-1] == "a:flow", opener
+    _, markup = await _open(dp, bot, session, "a:media")
+    assert _callbacks(markup)[-1] == "a:set"
+
+
+async def test_input_prompts_cancel_back_to_their_own_section(stack):
+    dp, bot, session, deps = stack
+    cases = {
+        "a:mat:add": "a:mat",
+        "a:fun:add": "a:fun",
+        "a:rst:add": "a:rst",
+        "a:media:add": "a:media",
+        "a:set:channel": "a:flow:sub",
+        "a:set:private": "a:flow:sub",
+        "a:flow:hi:txt": "a:flow:hi",
+        "a:set:report": "a:set",
+        "a:stat:chat": "a:stat",
+        "a:bc:new": "a:bc",
+    }
+    for opener, back in cases.items():
+        text, markup = await _open(dp, bot, session, opener)
+        assert _callbacks(markup)[-1] == back, opener
+        assert "Отмена" in markup.inline_keyboard[-1][-1].text, opener
+        await feed(dp, bot, callback=make_callback("a:menu", user_id=ADMIN_ID))  # сброс состояния
+
+
+async def test_material_list_is_compact_and_marks_content_type(stack):
+    dp, bot, session, deps = stack
+    video = await deps.media.save("v", "video", "FV")
+    await deps.material.add_block(text="Первый текстовый блок с длинным описанием " * 5)
+    await deps.material.add_block(media_id=video)
+    text, markup = await _open(dp, bot, session, "a:mat")
+    assert "📝" in text and "🎬" in text
+    assert len(text) < 700
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert any(label.startswith("1.") and "📝" in label for label in labels)
+
+
+async def test_channel_saved_from_flow_returns_to_subscription_screen(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:set:channel", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=50))
+    text, markup = _screen(session)
+    assert "Проверка подписки" in text
+    assert _callbacks(markup)[-1] == "a:flow"
+
+
+async def test_step_card_has_two_levels(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(60, text="Шаг", requires_subscription=True)
+    _, markup = await _open(dp, bot, session, f"a:fun:s:{step_id}")
+    main = _callbacks(markup)
+    assert f"a:fun:more:{step_id}" in main
+    assert not any(cb.startswith(("a:fun:del:", "a:fun:gate", "a:fun:tgl", "a:fun:up")) for cb in main)
+
+    _, markup = await _open(dp, bot, session, f"a:fun:more:{step_id}")
+    more = _callbacks(markup)
+    for prefix in ("a:fun:gate", "a:fun:unsub", "a:fun:tgl", "a:fun:up", "a:fun:dn", "a:fun:del:"):
+        assert any(cb.startswith(prefix) for cb in more), prefix
+    assert more[-1] == f"a:fun:s:{step_id}"
+
+
+async def test_broadcast_draft_list_marks_types_and_stays_short(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Привет всем, длинный текст " * 6, user_id=ADMIN_ID, message_id=61))
+    text, _ = await _open(dp, bot, session, "a:bc:done")
+    assert "📝" in text
+    assert len(text) < 500

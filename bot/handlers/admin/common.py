@@ -233,6 +233,47 @@ def buttons_hint(buttons_json: str | None) -> str:
     return ", ".join(b["text"] for b in buttons) if buttons else "нет"
 
 
+KIND_ICONS = {
+    "text": "📝",
+    "photo": "🖼",
+    "video": "🎬",
+    "video_note": "⭕",
+    "document": "📄",
+    "audio": "🎵",
+    "voice": "🎙",
+    "animation": "🎞",
+    "sticker": "😀",
+}
+KIND_NAMES = {
+    "photo": "фото",
+    "video": "видео",
+    "video_note": "кружок",
+    "document": "файл",
+    "audio": "аудио",
+    "voice": "голосовое",
+    "animation": "гифка",
+    "sticker": "стикер",
+}
+
+
+def item_label(text: str | None, media_kind: str | None, limit: int = 40) -> str:
+    """Одна строка про сообщение: иконка типа + короткое превью.
+
+    Текст без медиа — 📝, с медиа — иконка медиа; медиа без подписи называем по типу."""
+    icon = KIND_ICONS.get(media_kind or "text", "📝")
+    body = preview(text, limit)
+    if body == "без текста":
+        body = KIND_NAMES.get(media_kind or "", "пусто")
+    return f"{icon} {body}"
+
+
+def screen_text(title: str, hint: str, body: str = "") -> str:
+    """Короткий экран: жирный заголовок, подсказка курсивом, дальше список."""
+    parts = [f"<b>{title}</b>", f"<i>{hint}</i>"]
+    text = "\n".join(parts)
+    return f"{text}\n\n{body}" if body else text
+
+
 def preview(text: str | None, limit: int = 60) -> str:
     """Короткое превью текста для списков и подписей кнопок.
 

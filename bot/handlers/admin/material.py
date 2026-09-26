@@ -14,22 +14,18 @@ from bot.handlers.admin.common import (
     MaterialEdit,
     buttons_hint,
     capture_content,
+    item_label,
     kb,
     parse_buttons,
     preview,
     safe_excerpt,
+    screen_text,
     show,
 )
 
 router = Router(name="admin-material")
 
-HINT = (
-    "🎁 <b>Материал</b>\n\n"
-    "То, что человек получает сразу после проверки подписки. Блоки уходят по порядку: "
-    "файлы, видео, тексты со ссылками.\n\n"
-    "Если в настройках задан закрытый канал — персональная ссылка на него добавится "
-    "последним блоком автоматически."
-)
+HINT = "Приходит сразу после подписки, блоки уходят по порядку. Ссылка в закрытый канал добавится сама."
 
 
 async def material_screen(target, deps) -> None:
@@ -37,20 +33,19 @@ async def material_screen(target, deps) -> None:
     rows = [[("➕ Добавить блок", "a:mat:add")]]
     lines = []
     for index, block in enumerate(blocks, start=1):
-        media = f" [{block['media_slug']}]" if block["media_slug"] else ""
-        lines.append(f"{index}. {preview(block['text'])}{media}")
+        lines.append(f"{index}. {item_label(block['text'], block['media_kind'])}")
         rows.append(
             [
-                (f"{index}. {preview(block['text'], 20)}", f"a:mat:s:{block['id']}"),
+                (f"{index}. {item_label(block['text'], block['media_kind'], 16)}", f"a:mat:s:{block['id']}"),
                 ("⬆️", f"a:mat:up:{block['id']}"),
                 ("🗑", f"a:mat:del:{block['id']}"),
             ]
         )
-    rows.append([("👁 Показать целиком", "a:mat:prev")])
-    rows.append([("⬅️ Назад", "a:menu")])
+    if blocks:
+        rows.append([("👁 Показать целиком", "a:mat:prev")])
+    rows.append([("⬅️ Назад", "a:flow")])
     body = "\n".join(lines) if lines else "Блоков пока нет — жми «➕ Добавить блок»."
-    text = HINT + "\n\n" + body
-    await show(target, text, kb(rows))
+    await show(target, screen_text("🎁 Материал", HINT, body), kb(rows))
 
 
 @router.callback_query(F.data == "a:mat")

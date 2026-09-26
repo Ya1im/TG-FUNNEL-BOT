@@ -96,9 +96,11 @@ async def cb_stats_send(call: CallbackQuery, deps) -> None:
     await call.answer("Переслал ✅")
 
 
-@router.callback_query(F.data == "a:stat:chat")
+@router.callback_query(F.data.in_({"a:stat:chat", "a:set:report"}))
 async def cb_stats_chat(call: CallbackQuery, state: FSMContext, deps) -> None:
+    back = "a:set" if call.data == "a:set:report" else "a:stat"
     await state.set_state(ReportChatSet.waiting_value)
+    await state.update_data(back=back)
     current = (await deps.settings.get("report_chat_id")).strip() or "не задан"
     await show(
         call,
@@ -110,9 +112,21 @@ async def cb_stats_chat(call: CallbackQuery, state: FSMContext, deps) -> None:
         "/start у бота — если это не так, заведи для отчётов отдельную группу "
         "и добавь туда бота.\n\n"
         "Чтобы очистить — отправь <code>-</code>",
-        kb([[("⬅️ Отмена", "a:stat")]]),
+        kb([[("⬅️ Отмена", back)]]),
     )
     await call.answer()
+
+
+async def _after_report_chat(message, state: FSMContext, deps) -> None:
+    """Вернуть админа туда, откуда он пришёл: в настройки или в статистику."""
+    back = (await state.get_data()).get("back", "a:stat")
+    await state.clear()
+    if back == "a:set":
+        from bot.handlers.admin.settings import settings_screen
+
+        await settings_screen(message, deps)
+    else:
+        await stats_screen(message, deps)
 
 
 @router.message(ReportChatSet.waiting_value)
@@ -126,9 +140,8 @@ async def on_report_chat_value(message: Message, state: FSMContext, deps) -> Non
         raw = message.text.strip()
 
     if raw in ("-", "", None):
-        await state.clear()
         await deps.settings.set("report_chat_id", "")
-        await stats_screen(message, deps)
+        await _after_report_chat(message, state, deps)
         return
 
     if isinstance(raw, str) and not raw.lstrip("-").isdigit() and not raw.startswith("@"):
@@ -142,13 +155,12 @@ async def on_report_chat_value(message: Message, state: FSMContext, deps) -> Non
             f"Не получилось найти этот чат: {exc}\n\n"
             "Если это личный пользователь — он должен сначала сам написать боту "
             "/start. Пришли значение ещё раз.",
-            reply_markup=kb([[("⬅️ Отмена", "a:stat")]]),
+            reply_markup=kb([[("⬅️ Отмена", (await state.get_data()).get("back", "a:stat"))]]),
         )
         return
 
-    await state.clear()
     await deps.settings.set("report_chat_id", str(chat.id))
-    await stats_screen(message, deps)
+    await _after_report_chat(message, state, deps)
 
 
 @router.callback_query(F.data == "a:stat:reset")
