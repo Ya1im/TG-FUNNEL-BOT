@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.admin import broadcast, capture, fallback, flow, funnel, material, media, repeat_start, settings, stats
+from bot.handlers.admin import access, broadcast, capture, fallback, flow, funnel, material, media, repeat_start, settings, stats
 from bot.handlers.admin.common import AdminFilter, kb, show
 from bot.handlers.admin.flow import flow_status
 
@@ -54,6 +54,7 @@ async def cb_menu(call: CallbackQuery, deps, state: FSMContext) -> None:
     await call.answer()
 
 
+router.include_router(access.router)
 router.include_router(flow.router)
 router.include_router(media.router)
 router.include_router(funnel.router)

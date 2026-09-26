@@ -75,6 +75,7 @@ async def settings_screen(target, deps) -> None:
                 [("🎬 Медиатека", "a:media")],
                 [("✏️ Все тексты и кнопки", "a:set:texts")],
                 [("📤 Чат для отчётов", "a:set:report")],
+                [("👥 Доступ к статистике", "a:acc")],
                 [("⬅️ Назад", "a:menu")],
             ]
         ),

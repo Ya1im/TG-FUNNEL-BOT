@@ -102,3 +102,19 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Клиенты с доступом «только статистика» (команда /stats) и одноразовые пригласительные ссылки.
+CREATE TABLE IF NOT EXISTS viewers (
+    tg_id    INTEGER PRIMARY KEY,
+    name     TEXT,
+    username TEXT,
+    added_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS viewer_invites (
+    token      TEXT PRIMARY KEY,
+    created_by INTEGER,
+    created_at INTEGER NOT NULL,
+    used_by    INTEGER,
+    used_at    INTEGER
+);

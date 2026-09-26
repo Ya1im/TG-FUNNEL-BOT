@@ -929,7 +929,7 @@ async def test_settings_holds_only_general_things(stack):
     dp, bot, session, deps = stack
     _, markup = await _open(dp, bot, session, "a:set")
     cbs = _callbacks(markup)
-    assert cbs == ["a:media", "a:set:texts", "a:set:report", "a:menu"]
+    assert cbs == ["a:media", "a:set:texts", "a:set:report", "a:acc", "a:menu"]
 
 
 async def test_flow_steps_return_to_flow_and_media_to_settings(stack):
@@ -1006,3 +1006,79 @@ async def test_broadcast_draft_list_marks_types_and_stays_short(stack):
     text, _ = await _open(dp, bot, session, "a:bc:done")
     assert "📝" in text
     assert len(text) < 500
+
+
+# --- доступ «только статистика» ---------------------------------------------------
+
+VIEWER_ID = 555
+
+
+async def test_viewer_gets_stats_by_command_and_stranger_gets_nothing(stack):
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1, "u1", "Вася")
+    await deps.viewers.add(VIEWER_ID, "Клиент", "client")
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/stats", user_id=VIEWER_ID))
+    sent = session.calls("SendMessage")
+    assert len(sent) == 1 and "Статистика" in sent[0].text and sent[0].chat_id == VIEWER_ID
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/stats", user_id=1))  # обычный пользователь
+    assert "SendMessage" not in session.names()
+
+
+async def test_viewer_cannot_open_admin_panel(stack):
+    dp, bot, session, deps = stack
+    await deps.viewers.add(VIEWER_ID, "Клиент", None)
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "SendMessage" not in session.names()
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names()
+
+
+async def test_admin_stats_command_works_too(stack):
+    dp, bot, session, deps = stack
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/stats", user_id=ADMIN_ID))
+    assert "Статистика" in session.calls("SendMessage")[0].text
+
+
+async def test_admin_invites_viewer_by_link_and_link_works_once(stack):
+    dp, bot, session, deps = stack
+    text, markup = await _open(dp, bot, session, "a:acc:link")
+    assert "?start=v_" in text
+    token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=VIEWER_ID))
+    assert await deps.viewers.is_viewer(VIEWER_ID) is True
+    assert await deps.users.get(VIEWER_ID) is None  # клиент не попал в воронку и статистику
+    assert "/stats" in session.calls("SendMessage")[0].text
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=556))
+    assert await deps.viewers.is_viewer(556) is False
+    assert await deps.users.get(556) is None
+
+
+async def test_admin_adds_and_removes_viewer_by_id(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:acc:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("777", user_id=ADMIN_ID, message_id=70))
+    assert await deps.viewers.is_viewer(777) is True
+
+    text, markup = await _open(dp, bot, session, "a:acc")
+    assert "777" in text
+    assert "a:acc:del:777" in _callbacks(markup)
+    await _open(dp, bot, session, "a:acc:del:777")
+    text, _ = await _open(dp, bot, session, "a:acc:delok:777")
+    assert await deps.viewers.is_viewer(777) is False
+
+
+async def test_access_screen_cancel_returns_to_access(stack):
+    dp, bot, session, deps = stack
+    _, markup = await _open(dp, bot, session, "a:acc:add")
+    assert _callbacks(markup)[-1] == "a:acc"

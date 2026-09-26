@@ -110,6 +110,12 @@ class BroadcastItemEdit(StatesGroup):
     waiting_buttons = State()
 
 
+class ViewerAdd(StatesGroup):
+    """Добавление клиента с доступом «только статистика» по ID или пересланному сообщению."""
+
+    waiting_value = State()
+
+
 class MediaCapture(StatesGroup):
     """Файлы, присланные админом мимо сценария «Медиатека» — копятся тут перед сохранением."""
 

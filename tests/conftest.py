@@ -12,6 +12,7 @@ from bot.db import Database  # noqa: E402
 # Чтобы каждый тест получал свой чистый диспетчер, пересобираем модули заново.
 ROUTER_MODULES = [
     "bot.handlers.admin.common",
+    "bot.handlers.admin.access",
     "bot.handlers.admin.flow",
     "bot.handlers.admin.media",
     "bot.handlers.admin.funnel",
@@ -23,6 +24,7 @@ ROUTER_MODULES = [
     "bot.handlers.admin.capture",
     "bot.handlers.admin.fallback",
     "bot.handlers.admin",
+    "bot.handlers.viewer",
     "bot.handlers.user",
     "bot.handlers",
     "bot.__main__",

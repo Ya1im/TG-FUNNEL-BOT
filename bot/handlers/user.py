@@ -19,8 +19,27 @@ router = Router(name="user")
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, deps: Deps) -> None:
     payload = (command.args or "").strip()[:64] or None
+    if payload and payload.startswith("v_"):
+        await _redeem_viewer_invite(message, deps, payload[2:])
+        return
     await _sync_admin_commands(message, deps)
     await start_flow(message.bot, deps, message.from_user, message.chat.id, payload)
+
+
+async def _redeem_viewer_invite(message: Message, deps: Deps, token: str) -> None:
+    """Пригласительная ссылка клиента: даём доступ к /stats. В воронку и статистику человек не попадает."""
+    user = message.from_user
+    if not await deps.viewers.redeem(token, user.id, user.full_name, user.username):
+        await message.answer("Ссылка недействительна или уже использована. Попросите новую.")
+        return
+    try:
+        await message.bot.set_my_commands(
+            [BotCommand(command="stats", description="Статистика бота")],
+            scope=BotCommandScopeChat(chat_id=message.chat.id),
+        )
+    except Exception:  # noqa: BLE001 — меню команд не критично
+        log.debug("Не смог выставить команды клиенту %s", user.id)
+    await message.answer("Готово ✅ Доступ открыт. Отправьте /stats — пришлю статистику бота.")
 
 
 @router.callback_query(F.data == CHECK_CALLBACK)
@@ -71,6 +90,8 @@ async def cmd_help(message: Message, deps: Deps) -> None:
             "/admin — админка (медиатека, прогрев, рассылки, настройки)\n"
             "/reset — сбросить своё прохождение и пройти воронку заново"
         )
+    elif await deps.viewers.is_viewer(message.from_user.id):
+        await message.answer("Команда: /stats — статистика бота.")
     else:
         await message.answer("Жми /start 🙂")
 
