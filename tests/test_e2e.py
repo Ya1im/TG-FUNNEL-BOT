@@ -244,6 +244,33 @@ async def test_admin_builds_funnel_step(stack):
     assert "Канал" in steps[0]["buttons_json"]
 
 
+async def test_admin_edits_funnel_step_content_and_buttons(stack):
+    """Правка уже созданного шага прогрева — текст/медиа и кнопки отдельно."""
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(
+        delay_seconds=3600, text="Старый текст", buttons=[{"text": "Старая", "url": "https://old.test"}]
+    )
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:ed:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Новый текст шага", user_id=ADMIN_ID, message_id=50))
+
+    step = await deps.funnel.get_step(step_id)
+    assert step["text"] == "Новый текст шага"
+    assert "Старая" in step["buttons_json"]  # кнопки правкой контента не тронуты
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:btn:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Новая | https://new.test", user_id=ADMIN_ID, message_id=51))
+
+    step = await deps.funnel.get_step(step_id)
+    assert step["text"] == "Новый текст шага"  # текст правкой кнопок не тронут
+    assert "Новая" in step["buttons_json"] and "Старая" not in step["buttons_json"]
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:btn:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=52))
+    step = await deps.funnel.get_step(step_id)
+    assert step["buttons_json"] == "[]"
+
+
 async def test_admin_broadcast_end_to_end(stack):
     dp, bot, session, deps = stack
     for uid in (1, 2, 3):
@@ -253,6 +280,7 @@ async def test_admin_broadcast_end_to_end(stack):
     await feed(dp, bot, callback=make_callback("a:bc:new", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("Привет всем!", user_id=ADMIN_ID, message_id=40))
     await feed(dp, bot, callback=make_callback("a:bc:done", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:tosend", user_id=ADMIN_ID))
     session.requests.clear()
     await feed(dp, bot, callback=make_callback("a:bc:seg:all", user_id=ADMIN_ID))
 
@@ -262,8 +290,68 @@ async def test_admin_broadcast_end_to_end(stack):
 
     stats = await deps.engine.run(broadcast["id"])
     assert stats["sent"] == 3
-    copied = session.calls("CopyMessage")
-    assert sorted(c.chat_id for c in copied) == [1, 2, 3]
+    sent = session.calls("SendMessage")
+    assert sorted(c.chat_id for c in sent) == [1, 2, 3]
+    assert all(c.text == "Привет всем!" for c in sent)
+
+
+async def test_broadcast_draft_add_buttons_edit_and_reorder(stack):
+    """Черновик рассылки: список сообщений, кнопки, правка текста, удаление и порядок."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1)
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Первое сообщение", user_id=ADMIN_ID, message_id=60))
+    await feed(dp, bot, message=make_message("Второе сообщение", user_id=ADMIN_ID, message_id=61))
+    await feed(dp, bot, callback=make_callback("a:bc:done", user_id=ADMIN_ID))
+
+    # Открываем первое сообщение и добавляем ему кнопку
+    await feed(dp, bot, callback=make_callback("a:bc:d:0", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:dbtn:0", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Канал | https://t.me/x", user_id=ADMIN_ID, message_id=62))
+
+    data = await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_data()
+    assert data["messages"][0]["buttons"] == [{"text": "Канал", "url": "https://t.me/x"}]
+    assert data["messages"][0]["text"] == "Первое сообщение"
+
+    # Правим текст второго сообщения
+    await feed(dp, bot, callback=make_callback("a:bc:dedit:1", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Второе сообщение (правка)", user_id=ADMIN_ID, message_id=63))
+    data = await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_data()
+    assert data["messages"][1]["text"] == "Второе сообщение (правка)"
+
+    # Меняем местами и отправляем
+    await feed(dp, bot, callback=make_callback("a:bc:dup:1", user_id=ADMIN_ID))
+    data = await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_data()
+    assert [m["text"] for m in data["messages"]] == ["Второе сообщение (правка)", "Первое сообщение"]
+
+    await feed(dp, bot, callback=make_callback("a:bc:tosend", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:bc:seg:all", user_id=ADMIN_ID))
+
+    broadcast = (await deps.broadcasts.recent(1))[0]
+    stats = await deps.engine.run(broadcast["id"])
+    assert stats["sent"] == 1
+
+    sent = session.calls("SendMessage")
+    texts = [m.text for m in sent]
+    assert texts == ["Второе сообщение (правка)", "Первое сообщение"]
+    # кнопка приехала со вторым (изначально первым) сообщением
+    assert sent[1].reply_markup.inline_keyboard[0][0].text == "Канал"
+
+
+async def test_broadcast_draft_delete_item(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Раз", user_id=ADMIN_ID, message_id=70))
+    await feed(dp, bot, message=make_message("Два", user_id=ADMIN_ID, message_id=71))
+    await feed(dp, bot, callback=make_callback("a:bc:done", user_id=ADMIN_ID))
+
+    await feed(dp, bot, callback=make_callback("a:bc:ddel:0", user_id=ADMIN_ID))
+    data = await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_data()
+    assert [m["text"] for m in data["messages"]] == ["Два"]
 
 
 async def test_reset_is_admin_only(stack):
@@ -534,6 +622,28 @@ async def test_material_item_click_edits_card_not_new_message(stack):
     session.requests.clear()
     await feed(dp, bot, callback=make_callback(f"a:mat:prev:{block_id}", user_id=ADMIN_ID))
     assert "SendMessage" in session.names()
+
+
+async def test_admin_edits_material_block_content_and_buttons(stack):
+    """Правка уже созданного блока материала — текст/медиа и кнопки отдельно."""
+    dp, bot, session, deps = stack
+    block_id = await deps.material.add_block(
+        text="Старый материал", buttons=[{"text": "Старая", "url": "https://old.test"}]
+    )
+
+    await feed(dp, bot, callback=make_callback(f"a:mat:ed:{block_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Новый материал", user_id=ADMIN_ID, message_id=50))
+
+    block = await deps.material.get_block(block_id)
+    assert block["text"] == "Новый материал"
+    assert "Старая" in block["buttons_json"]
+
+    await feed(dp, bot, callback=make_callback(f"a:mat:btn:{block_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Новая | https://new.test", user_id=ADMIN_ID, message_id=51))
+
+    block = await deps.material.get_block(block_id)
+    assert block["text"] == "Новый материал"
+    assert "Новая" in block["buttons_json"] and "Старая" not in block["buttons_json"]
 
 
 async def test_admin_adds_repeat_start_block_via_dialog(stack):

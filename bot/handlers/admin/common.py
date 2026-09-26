@@ -57,11 +57,25 @@ class FunnelEditDelay(StatesGroup):
     waiting_value = State()
 
 
+class FunnelEditContent(StatesGroup):
+    """Правка уже существующего шага прогрева — текст/медиа или кнопки отдельно."""
+
+    waiting_content = State()
+    waiting_buttons = State()
+
+
 class FunnelImport(StatesGroup):
     waiting_file = State()
 
 
 class MaterialAdd(StatesGroup):
+    waiting_content = State()
+    waiting_buttons = State()
+
+
+class MaterialEdit(StatesGroup):
+    """Правка уже существующего блока материала — текст/медиа или кнопки отдельно."""
+
     waiting_content = State()
     waiting_buttons = State()
 
@@ -87,6 +101,13 @@ class ReportChatSet(StatesGroup):
 class BroadcastNew(StatesGroup):
     collecting = State()
     waiting_schedule = State()
+
+
+class BroadcastItemEdit(StatesGroup):
+    """Правка одного ещё не отправленного сообщения черновика рассылки."""
+
+    waiting_content = State()
+    waiting_buttons = State()
 
 
 class MediaCapture(StatesGroup):

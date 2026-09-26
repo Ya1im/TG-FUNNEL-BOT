@@ -110,6 +110,10 @@ class FakeBot:
         self.calls.append(("video_note", chat_id, file_id, reply_markup))
         return "note"
 
+    async def send_video(self, chat_id, file_id, caption=None, reply_markup=None):
+        self.calls.append(("video", chat_id, file_id, caption, reply_markup))
+        return "video"
+
     async def send_photo(self, chat_id, file_id, caption=None, reply_markup=None):
         self.calls.append(("photo", chat_id, file_id, caption, reply_markup))
         return "photo"
@@ -135,6 +139,44 @@ async def test_long_caption_goes_as_separate_message():
     await send_block(block, bot, 1)
     assert [c[0] for c in bot.calls] == ["photo", "text"]
     assert bot.calls[0][3] is None
+
+
+async def test_video_note_forbidden_by_privacy_falls_back_to_regular_video():
+    class FailingBot(FakeBot):
+        async def send_video_note(self, chat_id, file_id, reply_markup=None):
+            raise TelegramBadRequest(method=METHOD, message="Bad Request: VOICE_MESSAGES_FORBIDDEN")
+
+    bot = FailingBot()
+    block = ContentBlock(text="Привет", media_kind="video_note", file_id="F")
+    outcome = await send_block(block, bot, 1)
+    assert outcome.ok
+    assert [c[0] for c in bot.calls] == ["video", "text"]
+    assert bot.calls[0][3] is None  # без подписи — текст ушёл отдельным сообщением
+    assert bot.calls[1][2] == "Привет"
+
+
+async def test_video_note_other_bad_request_does_not_fall_back():
+    class FailingBot(FakeBot):
+        async def send_video_note(self, chat_id, file_id, reply_markup=None):
+            raise TelegramBadRequest(method=METHOD, message="Bad Request: chat not found")
+
+    bot = FailingBot()
+    block = ContentBlock(text="Привет", media_kind="video_note", file_id="F")
+    outcome = await send_block(block, bot, 1)
+    assert not outcome.ok
+    assert bot.calls == []
+
+
+async def test_voice_forbidden_has_no_fallback_for_voice_kind():
+    class FailingBot(FakeBot):
+        async def send_voice(self, chat_id, file_id, caption=None, reply_markup=None):
+            raise TelegramBadRequest(method=METHOD, message="Bad Request: VOICE_MESSAGES_FORBIDDEN")
+
+    bot = FailingBot()
+    block = ContentBlock(media_kind="voice", file_id="F")
+    outcome = await send_block(block, bot, 1)
+    assert not outcome.ok
+    assert bot.calls == []
 
 
 async def test_buttons_render_and_name_substitution():

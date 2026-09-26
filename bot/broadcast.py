@@ -5,7 +5,8 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from bot.sender import BLOCKED, SENT, safe_send
+from bot.content import ContentBlock
+from bot.sender import BLOCKED, SENT, safe_send, send_block
 
 log = logging.getLogger(__name__)
 
@@ -72,17 +73,35 @@ class BroadcastEngine:
         return stats
 
     async def _send_to(self, user_id: int, messages: list[dict]) -> tuple[str, str | None]:
+        user = None
         for msg in messages:
-            def action(msg=msg):
-                return self.bot.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=msg["chat_id"],
-                    message_id=msg["message_id"],
-                )
+            if "chat_id" in msg and "message_id" in msg:
+                # Старый формат (до кнопок и редактирования) — копия исходного
+                # сообщения админа как есть.
+                def action(msg=msg):
+                    return self.bot.copy_message(
+                        chat_id=user_id,
+                        from_chat_id=msg["chat_id"],
+                        message_id=msg["message_id"],
+                    )
 
-            outcome = await safe_send(
-                action, chat_id=user_id, users=self.users, limiter=self.limiter
-            )
+                outcome = await safe_send(
+                    action, chat_id=user_id, users=self.users, limiter=self.limiter
+                )
+            else:
+                # Новый формат: текст/медиа/кнопки — как у материала и прогрева,
+                # с тем же запасным вариантом для отклонённых кружков.
+                if user is None:
+                    user = await self.users.get(user_id)
+                block = ContentBlock(
+                    text=msg.get("text"),
+                    media_kind=msg.get("media_kind"),
+                    file_id=msg.get("file_id"),
+                    buttons=msg.get("buttons") or [],
+                )
+                outcome = await send_block(
+                    block, self.bot, user_id, user=user, users=self.users, limiter=self.limiter
+                )
             if outcome.status == BLOCKED:
                 return BLOCKED, None
             if not outcome.ok:

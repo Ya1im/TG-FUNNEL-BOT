@@ -1,6 +1,8 @@
 """Материал, который выдаётся после подтверждения подписки."""
 from __future__ import annotations
 
+import json
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -9,6 +11,7 @@ from bot.repo.funnel import block_from_row
 from bot.sender import send_block
 from bot.handlers.admin.common import (
     MaterialAdd,
+    MaterialEdit,
     buttons_hint,
     capture_content,
     kb,
@@ -114,6 +117,7 @@ async def block_screen(target, deps, block_id: int) -> None:
         kb(
             [
                 [("👁 Показать", f"a:mat:prev:{block_id}")],
+                [("✏️ Текст/медиа", f"a:mat:ed:{block_id}"), ("🔘 Кнопки", f"a:mat:btn:{block_id}")],
                 [("⬇️ Ниже", f"a:mat:dn:{block_id}"), ("⬆️ Выше", f"a:mat:up:{block_id}")],
                 [("🗑 Удалить", f"a:mat:del:{block_id}")],
                 [("⬅️ К материалу", "a:mat")],
@@ -149,6 +153,64 @@ async def cb_material_item_preview(call: CallbackQuery, deps) -> None:
         )
         return
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:mat:ed:"))
+async def cb_material_edit(call: CallbackQuery, state: FSMContext) -> None:
+    block_id = int(call.data.split(":")[-1])
+    await state.update_data(edit_block_id=block_id)
+    await state.set_state(MaterialEdit.waiting_content)
+    await show(
+        call,
+        "✏️ <b>Новое содержимое блока</b>\n\n"
+        "Пришли одним сообщением — заменит и текст, и медиа этого блока целиком.",
+        kb([[("⬅️ Отмена", f"a:mat:s:{block_id}")]]),
+    )
+    await call.answer()
+
+
+@router.message(MaterialEdit.waiting_content)
+async def on_material_edit_content(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    block_id = data.get("edit_block_id")
+    if block_id is None:
+        await state.clear()
+        return
+    text, media_id = await capture_content(deps, message, "material")
+    if not text and not media_id:
+        await message.answer("Пустое сообщение. Пришли текст или файл.")
+        return
+    await deps.material.update_block(block_id, text=text, media_id=media_id)
+    await state.clear()
+    await block_screen(message, deps, block_id)
+
+
+@router.callback_query(F.data.startswith("a:mat:btn:"))
+async def cb_material_edit_buttons(call: CallbackQuery, state: FSMContext) -> None:
+    block_id = int(call.data.split(":")[-1])
+    await state.update_data(edit_block_id=block_id)
+    await state.set_state(MaterialEdit.waiting_buttons)
+    await show(
+        call,
+        "🔘 <b>Кнопки блока</b>\n\n"
+        "Пришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы убрать все кнопки — отправь <code>-</code>",
+        kb([[("⬅️ Отмена", f"a:mat:s:{block_id}")]]),
+    )
+    await call.answer()
+
+
+@router.message(MaterialEdit.waiting_buttons, F.text)
+async def on_material_edit_buttons(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    block_id = data.get("edit_block_id")
+    if block_id is None:
+        await state.clear()
+        return
+    buttons = [] if message.text.strip() == "-" else parse_buttons(message.text)
+    await deps.material.update_block(block_id, buttons_json=json.dumps(buttons, ensure_ascii=False))
+    await state.clear()
+    await block_screen(message, deps, block_id)
 
 
 @router.callback_query(F.data.startswith("a:mat:up:"))

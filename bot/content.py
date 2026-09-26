@@ -66,6 +66,19 @@ class ContentBlock:
                 username = getattr(user, "username", "") or ""
         return self.text.replace("{name}", name).replace("{username}", username)
 
+    def fallback_factory(self, bot: Bot, chat_id: int, user: Any = None) -> Factory | None:
+        """Запасной вариант, если основной формат отклонён приватностью получателя
+        (см. VOICE_FORBIDDEN_FALLBACK) — сейчас только кружок → обычное видео.
+
+        Без подписи: кружок — captionless-тип, поэтому текст (если есть) уже
+        запланирован отдельным сообщением в factories() — не дублируем его тут.
+        """
+        send = VOICE_FORBIDDEN_FALLBACK.get(self.media_kind)
+        if not send or not self.file_id:
+            return None
+        kb = self.keyboard()
+        return _bind(send, bot, chat_id, self.file_id, None, kb)
+
     def factories(self, bot: Bot, chat_id: int, user: Any = None) -> list[Factory]:
         """Список отправок: обычно одна, для кружка с текстом — две."""
         text = self.render(user)
@@ -140,6 +153,16 @@ _SENDERS = {
     "animation": _send_animation,
     "sticker": _send_sticker,
 }
+
+# Telegram под капотом использует один и тот же код ошибки VOICE_MESSAGES_FORBIDDEN
+# и для голосовых, и для кружков (видеосообщений) — у пользователя это единая настройка
+# приватности «Голосовые и видеосообщения». Кружок, отклонённый по этой причине,
+# можно донести запасным способом — обычным (не круглым) видео тем же file_id.
+VOICE_FORBIDDEN_FALLBACK = {"video_note": _send_video}
+
+
+def is_voice_forbidden(error: str | None) -> bool:
+    return bool(error) and "VOICE_MESSAGES_FORBIDDEN" in error
 
 
 def apply_placeholders(text: str | None, channel_url: str = "") -> str | None:

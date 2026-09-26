@@ -12,7 +12,19 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.admin.common import BroadcastNew, MenuRef, kb, show
+from bot.content import ContentBlock
+from bot.sender import send_block
+from bot.handlers.admin.common import (
+    BroadcastItemEdit,
+    BroadcastNew,
+    MenuRef,
+    capture_content,
+    kb,
+    parse_buttons,
+    preview,
+    safe_excerpt,
+    show,
+)
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-broadcast")
@@ -30,8 +42,10 @@ SEGMENTS = [
 
 HINT = (
     "📤 <b>Рассылка</b>\n\n"
-    "Пришли боту одно или несколько сообщений — текст, фото, видео, кружок, файл.\n\n"
-    "Они уйдут людям ровно в том виде, в каком ты их отправил."
+    "Пришли боту одно или несколько сообщений — текст, фото, видео, кружок, файл, "
+    "аудио, голосовое, гифка или стикер.\n\n"
+    "Дальше сможешь посмотреть список, поправить текст/медиа, добавить кнопки-ссылки "
+    "и только потом выбрать получателей."
 )
 
 
@@ -79,24 +93,241 @@ async def cb_new(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(BroadcastNew.collecting)
-async def on_collect(message: Message, state: FSMContext) -> None:
+async def on_collect(message: Message, state: FSMContext, deps) -> None:
     """Копим сообщения для рассылки. Счётчик правим в одном и том же сообщении,
     чтобы при нескольких подряд присланных постах чат не зарастал одинаковыми уведомлениями."""
+    text, media_id = await capture_content(deps, message, "broadcast")
+    if not text and not media_id:
+        await message.answer(
+            "Такой тип сообщения пока не поддерживается для рассылки. Пришли текст, фото, "
+            "видео, кружок, файл, аудио, голосовое, гифку или стикер."
+        )
+        return
+    media_kind = file_id = None
+    if media_id:
+        media_row = await deps.media.get(media_id)
+        if media_row:
+            media_kind, file_id = media_row["kind"], media_row["file_id"]
     data = await state.get_data()
     messages = data.get("messages", [])
-    messages.append({"chat_id": message.chat.id, "message_id": message.message_id})
+    messages.append({"text": text, "media_kind": media_kind, "file_id": file_id, "buttons": []})
     await state.update_data(messages=messages)
-    text = f"📤 <b>Сбор рассылки</b>\n\nДобавлено сообщений: {len(messages)}\n\nШли ещё или жми «✅ Готово»."
+    text_out = f"📤 <b>Сбор рассылки</b>\n\nДобавлено сообщений: {len(messages)}\n\nШли ещё или жми «✅ Готово»."
     markup = kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]])
     chat_id, message_id = data.get("_menu_chat_id"), data.get("_menu_message_id")
     ref = MenuRef(message.bot, chat_id, message_id) if chat_id and message_id else None
-    result = await show(ref or message, text, markup)
+    result = await show(ref or message, text_out, markup)
     if ref is None and result is not None:
         await state.update_data(_menu_chat_id=result.chat.id, _menu_message_id=result.message_id)
 
 
+async def broadcast_draft_screen(target, state: FSMContext) -> None:
+    """Список ещё не отправленных сообщений черновика — как экран блоков материала."""
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    rows = []
+    lines = []
+    for idx, item in enumerate(messages):
+        media = f" [{item['media_kind']}]" if item.get("media_kind") else ""
+        n_buttons = len(item.get("buttons") or [])
+        btn_hint = f", кнопок: {n_buttons}" if n_buttons else ""
+        lines.append(f"{idx + 1}. {preview(item.get('text'))}{media}{btn_hint}")
+        rows.append(
+            [
+                (f"{idx + 1}. {preview(item.get('text'), 20)}", f"a:bc:d:{idx}"),
+                ("🗑", f"a:bc:ddel:{idx}"),
+            ]
+        )
+    rows.append([("➕ Добавить ещё", "a:bc:more")])
+    if messages:
+        rows.append([("▶️ Дальше — выбрать получателей", "a:bc:tosend")])
+    rows.append([("✖️ Отмена", "a:bc")])
+    body = "\n".join(lines) if lines else "Сообщений пока нет — пришли хотя бы одно."
+    text = "📤 <b>Сбор рассылки</b>\n\n" + body
+    await show(target, text, kb(rows))
+
+
+async def broadcast_item_screen(target, state: FSMContext, idx: int) -> None:
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    if not (0 <= idx < len(messages)):
+        await show(target, "Сообщение не найдено.", kb([[("⬅️ К списку", "a:bc:list")]]))
+        return
+    item = messages[idx]
+    text = (
+        f"📤 <b>Сообщение #{idx + 1}</b>\n\n"
+        f"🎬 Медиа: {item.get('media_kind') or 'нет'}\n"
+        f"🔘 Кнопки: {', '.join(b['text'] for b in item.get('buttons') or []) or 'нет'}\n\n"
+        f"Текст:\n{safe_excerpt(item.get('text')) or '<i>без текста</i>'}"
+    )
+    await show(
+        target,
+        text,
+        kb(
+            [
+                [("👁 Показать", f"a:bc:dprev:{idx}")],
+                [("✏️ Текст/медиа", f"a:bc:dedit:{idx}"), ("🔘 Кнопки", f"a:bc:dbtn:{idx}")],
+                [("⬆️ Выше", f"a:bc:dup:{idx}"), ("⬇️ Ниже", f"a:bc:ddn:{idx}")],
+                [("🗑 Удалить", f"a:bc:ddel:{idx}")],
+                [("⬅️ К списку", "a:bc:list")],
+            ]
+        ),
+    )
+
+
 @router.callback_query(F.data == "a:bc:done")
-async def cb_done(call: CallbackQuery, deps, state: FSMContext) -> None:
+async def cb_done(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("messages"):
+        await call.answer("Сначала пришли хотя бы одно сообщение", show_alert=True)
+        return
+    await broadcast_draft_screen(call, state)
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:bc:list")
+async def cb_draft_list(call: CallbackQuery, state: FSMContext) -> None:
+    await broadcast_draft_screen(call, state)
+    await call.answer()
+
+
+@router.callback_query(F.data == "a:bc:more")
+async def cb_draft_more(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(BroadcastNew.collecting)
+    await show(
+        call,
+        "📤 <b>Сбор рассылки</b>\n\nШли ещё сообщения — можно несколько подряд.\n\nКогда закончишь, жми «✅ Готово».",
+        kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:d:"))
+async def cb_draft_item(call: CallbackQuery, state: FSMContext) -> None:
+    idx = int(call.data.split(":")[-1])
+    await broadcast_item_screen(call, state, idx)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:dprev:"))
+async def cb_draft_preview(call: CallbackQuery, state: FSMContext) -> None:
+    idx = int(call.data.split(":")[-1])
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    if not (0 <= idx < len(messages)):
+        await call.answer("Сообщение не найдено", show_alert=True)
+        return
+    await send_block(_block_from_item(messages[idx]), call.bot, call.message.chat.id, user=call.from_user)
+    await call.answer("Это увидят люди")
+
+
+@router.callback_query(F.data.startswith("a:bc:ddel:"))
+async def cb_draft_delete(call: CallbackQuery, state: FSMContext) -> None:
+    idx = int(call.data.split(":")[-1])
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    if 0 <= idx < len(messages):
+        messages.pop(idx)
+        await state.update_data(messages=messages)
+    await call.answer("Удалил")
+    await broadcast_draft_screen(call, state)
+
+
+@router.callback_query(F.data.startswith("a:bc:dup:"))
+async def cb_draft_up(call: CallbackQuery, state: FSMContext) -> None:
+    await _move_draft_item(state, int(call.data.split(":")[-1]), -1)
+    await call.answer()
+    await broadcast_draft_screen(call, state)
+
+
+@router.callback_query(F.data.startswith("a:bc:ddn:"))
+async def cb_draft_down(call: CallbackQuery, state: FSMContext) -> None:
+    await _move_draft_item(state, int(call.data.split(":")[-1]), 1)
+    await call.answer()
+    await broadcast_draft_screen(call, state)
+
+
+async def _move_draft_item(state: FSMContext, idx: int, direction: int) -> None:
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    new_idx = idx + direction
+    if 0 <= idx < len(messages) and 0 <= new_idx < len(messages):
+        messages[idx], messages[new_idx] = messages[new_idx], messages[idx]
+        await state.update_data(messages=messages)
+
+
+@router.callback_query(F.data.startswith("a:bc:dedit:"))
+async def cb_draft_edit(call: CallbackQuery, state: FSMContext) -> None:
+    idx = int(call.data.split(":")[-1])
+    await state.update_data(edit_idx=idx)
+    await state.set_state(BroadcastItemEdit.waiting_content)
+    await show(
+        call,
+        "✏️ <b>Новое содержимое сообщения</b>\n\nПришли одним сообщением — заменит и текст, и медиа целиком.",
+        kb([[("⬅️ Отмена", f"a:bc:d:{idx}")]]),
+    )
+    await call.answer()
+
+
+@router.message(BroadcastItemEdit.waiting_content)
+async def on_draft_edit_content(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    idx = data.get("edit_idx")
+    messages = data.get("messages", [])
+    if idx is None or not (0 <= idx < len(messages)):
+        await state.set_state(BroadcastNew.collecting)
+        return
+    text, media_id = await capture_content(deps, message, "broadcast")
+    if not text and not media_id:
+        await message.answer("Пустое сообщение. Пришли текст или файл.")
+        return
+    media_kind = file_id = None
+    if media_id:
+        media_row = await deps.media.get(media_id)
+        if media_row:
+            media_kind, file_id = media_row["kind"], media_row["file_id"]
+    messages[idx] = {
+        "text": text,
+        "media_kind": media_kind,
+        "file_id": file_id,
+        "buttons": messages[idx].get("buttons", []),
+    }
+    await state.update_data(messages=messages)
+    await state.set_state(BroadcastNew.collecting)
+    await broadcast_item_screen(message, state, idx)
+
+
+@router.callback_query(F.data.startswith("a:bc:dbtn:"))
+async def cb_draft_buttons(call: CallbackQuery, state: FSMContext) -> None:
+    idx = int(call.data.split(":")[-1])
+    await state.update_data(edit_idx=idx)
+    await state.set_state(BroadcastItemEdit.waiting_buttons)
+    await show(
+        call,
+        "🔘 <b>Кнопки сообщения</b>\n\nПришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы убрать все кнопки — отправь <code>-</code>",
+        kb([[("⬅️ Отмена", f"a:bc:d:{idx}")]]),
+    )
+    await call.answer()
+
+
+@router.message(BroadcastItemEdit.waiting_buttons, F.text)
+async def on_draft_buttons(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    idx = data.get("edit_idx")
+    messages = data.get("messages", [])
+    if idx is None or not (0 <= idx < len(messages)):
+        await state.set_state(BroadcastNew.collecting)
+        return
+    buttons = [] if message.text.strip() == "-" else parse_buttons(message.text)
+    messages[idx]["buttons"] = buttons
+    await state.update_data(messages=messages)
+    await state.set_state(BroadcastNew.collecting)
+    await broadcast_item_screen(message, state, idx)
+
+
+@router.callback_query(F.data == "a:bc:tosend")
+async def cb_pick_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
     data = await state.get_data()
     if not data.get("messages"):
         await call.answer("Сначала пришли хотя бы одно сообщение", show_alert=True)
@@ -139,6 +370,15 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
     await call.answer()
 
 
+def _block_from_item(item: dict) -> ContentBlock:
+    return ContentBlock(
+        text=item.get("text"),
+        media_kind=item.get("media_kind"),
+        file_id=item.get("file_id"),
+        buttons=item.get("buttons") or [],
+    )
+
+
 def _eta(total: int, deps) -> str:
     rate = deps.config.messages_per_second or 20
     seconds = int(total / rate) + 1
@@ -151,11 +391,14 @@ def _eta(total: int, deps) -> str:
 async def cb_preview(call: CallbackQuery, deps) -> None:
     broadcast_id = int(call.data.split(":")[-1])
     for msg in await deps.broadcasts.messages(broadcast_id):
-        await call.bot.copy_message(
-            chat_id=call.message.chat.id,
-            from_chat_id=msg["chat_id"],
-            message_id=msg["message_id"],
-        )
+        if "chat_id" in msg and "message_id" in msg:
+            await call.bot.copy_message(
+                chat_id=call.message.chat.id,
+                from_chat_id=msg["chat_id"],
+                message_id=msg["message_id"],
+            )
+        else:
+            await send_block(_block_from_item(msg), call.bot, call.message.chat.id, user=call.from_user)
     await call.answer("Это увидят люди")
 
 

@@ -15,6 +15,8 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 
+from bot.content import is_voice_forbidden
+
 log = logging.getLogger(__name__)
 
 SENT = "sent"
@@ -108,10 +110,22 @@ async def send_block(
     users=None,
     limiter: RateLimiter | None = None,
 ) -> SendOutcome:
-    """Отправить ContentBlock целиком. Первая неудача прекращает блок."""
+    """Отправить ContentBlock целиком. Первая неудача прекращает блок.
+
+    Кружок, отклонённый Telegram из-за приватности получателя
+    (VOICE_MESSAGES_FORBIDDEN — общая настройка на голосовые и видеосообщения),
+    пробуем донести запасным способом — обычным видео (см. ContentBlock.fallback_factory)."""
     outcome = SendOutcome(SENT)
-    for factory in block.factories(bot, chat_id, user):
+    for index, factory in enumerate(block.factories(bot, chat_id, user)):
         outcome = await safe_send(factory, chat_id=chat_id, users=users, limiter=limiter)
+        if not outcome.ok and index == 0 and is_voice_forbidden(outcome.error):
+            fallback = block.fallback_factory(bot, chat_id, user)
+            if fallback is not None:
+                log.info(
+                    "Кружок отклонён приватностью получателя (chat_id=%s) — шлю обычным видео",
+                    chat_id,
+                )
+                outcome = await safe_send(fallback, chat_id=chat_id, users=users, limiter=limiter)
         if not outcome.ok:
             return outcome
     return outcome

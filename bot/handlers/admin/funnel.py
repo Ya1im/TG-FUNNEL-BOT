@@ -11,6 +11,7 @@ from bot.repo.funnel import block_from_row, human_delay, parse_delay
 from bot.sender import send_block
 from bot.handlers.admin.common import (
     FunnelAdd,
+    FunnelEditContent,
     FunnelEditDelay,
     FunnelImport,
     buttons_hint,
@@ -88,6 +89,7 @@ async def step_screen(target, deps, step_id: int) -> None:
         kb(
             [
                 [("⏱ Задержка", f"a:fun:delay:{step_id}"), ("👁 Показать", f"a:fun:prev:{step_id}")],
+                [("✏️ Текст/медиа", f"a:fun:ed:{step_id}"), ("🔘 Кнопки", f"a:fun:btn:{step_id}")],
                 [
                     ("🔒 Подписка вкл/выкл", f"a:fun:gate:{step_id}"),
                     ("⏸ Вкл/выкл", f"a:fun:tgl:{step_id}"),
@@ -150,6 +152,67 @@ async def cb_step_delete(call: CallbackQuery, deps) -> None:
     await deps.funnel.delete_step(step_id)
     await call.answer("Шаг удалён")
     await funnel_screen(call, deps)
+
+
+# --- изменение содержимого и кнопок ---------------------------------------
+
+
+@router.callback_query(F.data.startswith("a:fun:ed:"))
+async def cb_step_edit(call: CallbackQuery, state: FSMContext) -> None:
+    step_id = int(call.data.split(":")[-1])
+    await state.update_data(edit_step_id=step_id)
+    await state.set_state(FunnelEditContent.waiting_content)
+    await show(
+        call,
+        "✏️ <b>Новое содержимое шага</b>\n\n"
+        "Пришли одним сообщением — заменит и текст, и медиа этого шага целиком.",
+        kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
+    )
+    await call.answer()
+
+
+@router.message(FunnelEditContent.waiting_content)
+async def on_step_edit_content(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    step_id = data.get("edit_step_id")
+    if step_id is None:
+        await state.clear()
+        return
+    text, media_id = await capture_content(deps, message, "step")
+    if not text and not media_id:
+        await message.answer("Пустое сообщение. Пришли текст или файл.")
+        return
+    await deps.funnel.update_step(step_id, text=text, media_id=media_id)
+    await state.clear()
+    await step_screen(message, deps, step_id)
+
+
+@router.callback_query(F.data.startswith("a:fun:btn:"))
+async def cb_step_edit_buttons(call: CallbackQuery, state: FSMContext) -> None:
+    step_id = int(call.data.split(":")[-1])
+    await state.update_data(edit_step_id=step_id)
+    await state.set_state(FunnelEditContent.waiting_buttons)
+    await show(
+        call,
+        "🔘 <b>Кнопки шага</b>\n\n"
+        "Пришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы убрать все кнопки — отправь <code>-</code>",
+        kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
+    )
+    await call.answer()
+
+
+@router.message(FunnelEditContent.waiting_buttons, F.text)
+async def on_step_edit_buttons(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    step_id = data.get("edit_step_id")
+    if step_id is None:
+        await state.clear()
+        return
+    buttons = [] if message.text.strip() == "-" else parse_buttons(message.text)
+    await deps.funnel.update_step(step_id, buttons_json=json.dumps(buttons, ensure_ascii=False))
+    await state.clear()
+    await step_screen(message, deps, step_id)
 
 
 # --- изменение задержки ---------------------------------------------------
