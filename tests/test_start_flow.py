@@ -3,7 +3,12 @@ import pytest
 from bot.config import Config
 from bot.deps import Deps
 from bot.sender import RateLimiter
-from bot.services import check_subscription_flow, deliver_material, start_flow
+from bot.services import (
+    check_subscription_flow,
+    deliver_material,
+    migrate_repeat_start_blocks,
+    start_flow,
+)
 
 
 class FakeUser:
@@ -100,14 +105,76 @@ async def test_repeat_start_before_material_skips_note(db, config):
     assert [c[0] for c in bot.calls] == ["text"]  # кружок не повторяем
 
 
-async def test_repeat_start_after_material_is_short(db, config):
+async def test_repeat_start_with_no_blocks_sends_nothing(db, config):
+    """Раньше на повторный /start уходил один фиксированный текст. Теперь это
+    настраиваемые блоки (как у материала) — если админ ни одного не добавил,
+    бот на повторный /start ничего не шлёт (это осознанный выбор админа,
+    а не баг)."""
     deps = await make_deps(db, config)
     await deps.users.upsert(1)
     await deps.users.mark_material_sent(1)
     bot = FakeBot()
     await start_flow(bot, deps, FakeUser(), chat_id=1)
+    assert bot.calls == []
+
+
+async def test_repeat_start_sends_configured_blocks_in_order(db, config):
+    """Повторный /start шлёт ровно те блоки (любого формата), что настроил админ, по порядку."""
+    deps = await make_deps(db, config)
+    await deps.users.upsert(1)
+    await deps.users.mark_material_sent(1)
+    doc_id = await deps.media.save("bonus", "document", "FILE_DOC")
+    await deps.repeat_start.add_block(text="Привет снова 👋")
+    await deps.repeat_start.add_block(text="Вот бонус", media_id=doc_id)
+    bot = FakeBot()
+
+    await start_flow(bot, deps, FakeUser(), chat_id=1)
+
+    kinds = [c[0] for c in bot.calls]
+    assert kinds == ["text", "document"]
+    assert bot.calls[0][1] == "Привет снова 👋"
+
+
+async def test_repeat_start_skips_disabled_blocks(db, config):
+    deps = await make_deps(db, config)
+    await deps.users.upsert(1)
+    await deps.users.mark_material_sent(1)
+    block_id = await deps.repeat_start.add_block(text="Выключенный блок")
+    await deps.repeat_start.update_block(block_id, enabled=0)
+    await deps.repeat_start.add_block(text="Включённый блок")
+    bot = FakeBot()
+
+    await start_flow(bot, deps, FakeUser(), chat_id=1)
+
     assert len(bot.calls) == 1
-    assert "уже в деле" in bot.calls[0][1]
+    assert bot.calls[0][1] == "Включённый блок"
+
+
+async def test_migrate_repeat_start_seeds_one_block_from_old_text(db, config):
+    """Одноразовая миграция: у уже работающего бота есть старый already_started_text —
+    после обновления он должен стать первым (и единственным) блоком, чтобы
+    повторный /start не «замолчал» сам по себе."""
+    deps = await make_deps(db, config)
+    await deps.settings.set("already_started_text", "Ты уже в деле, жди продолжения")
+
+    await migrate_repeat_start_blocks(deps)
+
+    blocks = await deps.repeat_start.list_blocks()
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == "Ты уже в деле, жди продолжения"
+
+
+async def test_migrate_repeat_start_runs_only_once(db, config):
+    """Если админ после миграции сам удалит все блоки (хочет тишину на повторный
+    /start) — повторный запуск бота не должен вернуть старый текст обратно."""
+    deps = await make_deps(db, config)
+    await migrate_repeat_start_blocks(deps)
+    for block in await deps.repeat_start.list_blocks():
+        await deps.repeat_start.delete_block(block["id"])
+
+    await migrate_repeat_start_blocks(deps)  # имитируем повторный старт бота
+
+    assert await deps.repeat_start.list_blocks() == []
 
 
 async def test_check_success_delivers_material_and_starts_funnel(db, config):

@@ -37,6 +37,34 @@ async def send_welcome(bot, deps, chat_id: int) -> None:
     await send_menu(bot, deps, chat_id)
 
 
+async def send_repeat_start(bot, deps, chat_id: int, user=None) -> None:
+    """Ответ на повторный /start — произвольные блоки, которые собрал админ.
+
+    Раньше это был один фиксированный текст (already_started_text). Теперь —
+    как материал: сколько угодно сообщений любого формата (текст/медиа/кнопки)
+    по порядку. Если админ не добавил ни одного блока — ничего не шлём."""
+    for row in await deps.repeat_start.list_blocks(only_enabled=True):
+        block = block_from_row(row)
+        if block.is_empty:
+            continue
+        await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
+
+
+async def migrate_repeat_start_blocks(deps) -> None:
+    """Одноразовая миграция: старый already_started_text → первый блок.
+
+    Выполняется один раз за всю жизнь базы (флаг в settings), а не «пока блоков
+    нет» — иначе если админ сам удалит все блоки, желая вообще ничего не слать
+    на повторный /start, эта функция при следующем запуске бота вернула бы
+    старый текст обратно."""
+    if (await deps.settings.get("repeat_start_migrated")).strip():
+        return
+    text = (await deps.settings.get("already_started_text")).strip()
+    if text:
+        await deps.repeat_start.add_block(text=text)
+    await deps.settings.set("repeat_start_migrated", "1")
+
+
 async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = None) -> None:
     is_new = await deps.users.upsert(
         tg_user.id,
@@ -46,12 +74,7 @@ async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = Non
     )
     user = await deps.users.get(tg_user.id)
     if user["material_sent_at"]:
-        text = await deps.settings.get("already_started_text")
-
-        async def action():
-            return await bot.send_message(chat_id, text)
-
-        await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
+        await send_repeat_start(bot, deps, chat_id, user=user)
         return
     if is_new:
         await send_welcome(bot, deps, chat_id)

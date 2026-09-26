@@ -457,6 +457,65 @@ async def test_media_preview_with_stale_file_id_shows_alert_and_stays_deletable(
     assert await deps.media.get(media_id) is None
 
 
+async def test_texts_screen_always_answers_callback_even_if_rendering_fails(stack, monkeypatch):
+    """Регресс: раньше, если отрисовать экран не получалось никаким способом
+    (например, сохранённый текст оказался слишком длинным/с проблемными
+    символами), show() падал исключением, хендлер не доходил до
+    `call.answer()`, и кнопка «✏️ Тексты и кнопки» вечно крутилась в
+    загрузке, ничего не происходило. Теперь show() всегда отвечает и шлёт
+    понятное запасное сообщение вместо тишины."""
+    dp, bot, session, deps = stack
+    from aiogram.exceptions import TelegramBadRequest
+
+    from bot.handlers.admin.common import FALLBACK_ERROR_TEXT
+
+    async def fake_request(bot_, method, timeout=None):
+        session.requests.append(method)
+        name = type(method).__name__
+        if name in ("EditMessageText", "EditMessageCaption"):
+            raise TelegramBadRequest(method=method, message="can't parse entities: unsupported tag")
+        if name == "SendMessage" and getattr(method, "text", "") != FALLBACK_ERROR_TEXT:
+            raise TelegramBadRequest(method=method, message="can't parse entities: unsupported tag")
+        return await MockSession.make_request(session, bot_, method, timeout)
+
+    monkeypatch.setattr(session, "make_request", fake_request)
+
+    await feed(dp, bot, callback=make_callback("a:set:texts", user_id=ADMIN_ID))
+
+    assert session.calls("AnswerCallbackQuery"), "кнопка не должна зависать без ответа"
+    sent_texts = [getattr(m, "text", "") for m in session.calls("SendMessage")]
+    assert FALLBACK_ERROR_TEXT in sent_texts, "админ должен увидеть понятное сообщение вместо тишины"
+
+
+async def test_material_block_screen_always_answers_callback_even_if_rendering_fails(stack, monkeypatch):
+    """Тот же регресс, что и для «Тексты и кнопки», но для карточки блока
+    материала (открывается по кнопке пункта в списке «🎁 Материал»)."""
+    dp, bot, session, deps = stack
+    await deps.material.add_block(text="Обычный короткий текст блока")
+    block_id = (await deps.material.list_blocks())[0]["id"]
+
+    from aiogram.exceptions import TelegramBadRequest
+
+    from bot.handlers.admin.common import FALLBACK_ERROR_TEXT
+
+    async def fake_request(bot_, method, timeout=None):
+        session.requests.append(method)
+        name = type(method).__name__
+        if name in ("EditMessageText", "EditMessageCaption"):
+            raise TelegramBadRequest(method=method, message="can't parse entities: unsupported tag")
+        if name == "SendMessage" and getattr(method, "text", "") != FALLBACK_ERROR_TEXT:
+            raise TelegramBadRequest(method=method, message="can't parse entities: unsupported tag")
+        return await MockSession.make_request(session, bot_, method, timeout)
+
+    monkeypatch.setattr(session, "make_request", fake_request)
+
+    await feed(dp, bot, callback=make_callback(f"a:mat:s:{block_id}", user_id=ADMIN_ID))
+
+    assert session.calls("AnswerCallbackQuery"), "кнопка не должна зависать без ответа"
+    sent_texts = [getattr(m, "text", "") for m in session.calls("SendMessage")]
+    assert FALLBACK_ERROR_TEXT in sent_texts, "админ должен увидеть понятное сообщение вместо тишины"
+
+
 async def test_material_item_click_edits_card_not_new_message(stack):
     """Клик по блоку материала правит то же сообщение, а не шлёт обзор новым сообщением."""
     dp, bot, session, deps = stack
@@ -475,6 +534,70 @@ async def test_material_item_click_edits_card_not_new_message(stack):
     session.requests.clear()
     await feed(dp, bot, callback=make_callback(f"a:mat:prev:{block_id}", user_id=ADMIN_ID))
     assert "SendMessage" in session.names()
+
+
+async def test_admin_adds_repeat_start_block_via_dialog(stack):
+    """Полный сценарий добавления блока через диалог — от кнопки до сохранения в БД."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:set", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:rst", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:rst:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Рад видеть тебя снова 👋", user_id=ADMIN_ID, message_id=40))
+    await feed(dp, bot, message=make_message("Канал | https://t.me/x", user_id=ADMIN_ID, message_id=41))
+
+    blocks = await deps.repeat_start.list_blocks()
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == "Рад видеть тебя снова 👋"
+    assert "Канал" in blocks[0]["buttons_json"]
+
+
+async def test_repeat_start_screen_lists_blocks_and_reflects_user_flow(stack):
+    """То, что настроено в «Повторный /start», реально уходит пользователю на второй /start."""
+    dp, bot, session, deps = stack
+    await deps.repeat_start.add_block(text="С возвращением 👋")
+    await deps.users.upsert(USER_ID)
+    await deps.users.mark_material_sent(USER_ID)
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/start"))
+
+    sent = [r for r in session.calls("SendMessage") if getattr(r, "text", "") == "С возвращением 👋"]
+    assert sent, "настроенный блок должен уйти пользователю на повторный /start"
+
+
+async def test_repeat_start_item_click_edits_card_not_new_message(stack):
+    """Клик по блоку правит то же сообщение, а не шлёт обзор новым (как у материала)."""
+    dp, bot, session, deps = stack
+    await deps.repeat_start.add_block(text="Блок", buttons=[{"text": "Урок", "url": "https://x.test"}])
+    block_id = (await deps.repeat_start.list_blocks())[0]["id"]
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:rst:s:{block_id}", user_id=ADMIN_ID))
+
+    assert "SendMessage" not in session.names()
+    assert "EditMessageText" in session.names()
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:rst:prev:{block_id}", user_id=ADMIN_ID))
+    assert "SendMessage" in session.names()
+
+
+async def test_repeat_start_toggle_and_delete(stack):
+    dp, bot, session, deps = stack
+    block_id = await deps.repeat_start.add_block(text="Временный блок")
+
+    await feed(dp, bot, callback=make_callback(f"a:rst:off:{block_id}", user_id=ADMIN_ID))
+    row = await deps.repeat_start.get_block(block_id)
+    assert row["enabled"] == 0
+
+    await feed(dp, bot, callback=make_callback(f"a:rst:on:{block_id}", user_id=ADMIN_ID))
+    row = await deps.repeat_start.get_block(block_id)
+    assert row["enabled"] == 1
+
+    await feed(dp, bot, callback=make_callback(f"a:rst:del:{block_id}", user_id=ADMIN_ID))
+    assert await deps.repeat_start.get_block(block_id) is None
 
 
 async def test_stats_reset_requires_confirmation_and_wipes_users(stack):

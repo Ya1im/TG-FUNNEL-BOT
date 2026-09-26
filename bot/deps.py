@@ -10,6 +10,7 @@ from bot.repo.broadcasts import BroadcastsRepo
 from bot.repo.funnel import FunnelRepo
 from bot.repo.material import MaterialRepo
 from bot.repo.media import MediaRepo
+from bot.repo.repeat_start import RepeatStartRepo
 from bot.repo.settings import SettingsRepo
 from bot.repo.users import UsersRepo
 from bot.sender import RateLimiter
@@ -27,6 +28,7 @@ class Deps:
     settings: SettingsRepo
     gate: ChannelGate
     limiter: RateLimiter
+    repeat_start: RepeatStartRepo = None
     broadcasts: Any = None
     engine: Any = None
     scheduler: Any = None
@@ -45,5 +47,6 @@ class Deps:
             settings=settings,
             gate=ChannelGate(bot, settings, users),
             limiter=RateLimiter(config.messages_per_second),
+            repeat_start=RepeatStartRepo(db),
             broadcasts=BroadcastsRepo(db),
         )

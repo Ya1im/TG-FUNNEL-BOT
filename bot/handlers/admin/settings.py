@@ -7,7 +7,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.repo.media import KIND_TITLES
-from bot.handlers.admin.common import ChannelSet, SettingEdit, kb, message_text, preview, show
+from bot.handlers.admin.common import (
+    ChannelSet,
+    SettingEdit,
+    kb,
+    message_text,
+    preview,
+    safe_excerpt,
+    show,
+)
 
 router = Router(name="admin-settings")
 
@@ -21,7 +29,8 @@ TEXT_KEYS = {
     "private_text": "Текст к ссылке в закрытый канал",
     "btn_private": "Кнопка «Войти в закрытый канал»",
     "reminder_text": "Напоминание подписаться (в прогреве)",
-    "already_started_text": "Ответ на повторный /start",
+    # already_started_text сюда больше не входит — ответ на повторный /start
+    # теперь настраивается блоками в «🔁 Повторный /start» (см. repeat_start.py)
 }
 
 
@@ -51,6 +60,7 @@ async def settings_screen(target, deps) -> None:
                 [("🔒 Закрытый канал", "a:set:private")],
                 [("👋 Приветствие", "a:set:note")],
                 [("✏️ Тексты и кнопки", "a:set:texts")],
+                [("🔁 Повторный /start", "a:rst")],
                 [("⬅️ Назад", "a:menu")],
             ]
         ),
@@ -243,7 +253,7 @@ async def cb_text_edit(call: CallbackQuery, deps, state: FSMContext) -> None:
     await show(
         call,
         f"✏️ <b>{TEXT_KEYS[key]}</b>\n\n"
-        f"Сейчас:\n{current or '<i>пусто</i>'}\n\n"
+        f"Сейчас:\n{safe_excerpt(current) or '<i>пусто</i>'}\n\n"
         "Пришли новый текст.\n\n"
         "Подсказка: <code>{name}</code> в тексте подставится именем пользователя.",
         kb([[("⬅️ Отмена", "a:set:texts")]]),

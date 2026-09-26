@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.admin import broadcast, capture, fallback, funnel, material, media, settings, stats
+from bot.handlers.admin import broadcast, capture, fallback, funnel, material, media, repeat_start, settings, stats
 from bot.handlers.admin.common import AdminFilter, kb, show
 
 router = Router(name="admin")
@@ -55,6 +55,7 @@ async def cb_menu(call: CallbackQuery, deps, state: FSMContext) -> None:
 router.include_router(media.router)
 router.include_router(funnel.router)
 router.include_router(material.router)
+router.include_router(repeat_start.router)
 router.include_router(settings.router)
 router.include_router(stats.router)
 router.include_router(broadcast.router)

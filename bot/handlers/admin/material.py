@@ -14,6 +14,7 @@ from bot.handlers.admin.common import (
     kb,
     parse_buttons,
     preview,
+    safe_excerpt,
     show,
 )
 
@@ -105,7 +106,7 @@ async def block_screen(target, deps, block_id: int) -> None:
         "🎁 <b>Блок материала</b>\n\n"
         f"🎬 Медиа: {block['media_slug'] or 'нет'}\n"
         f"🔘 Кнопки: {buttons_hint(block['buttons_json'])}\n\n"
-        f"Текст:\n{block['text'] or '<i>без текста</i>'}"
+        f"Текст:\n{safe_excerpt(block['text']) or '<i>без текста</i>'}"
     )
     await show(
         target,

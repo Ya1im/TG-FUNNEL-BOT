@@ -1,7 +1,10 @@
 """Общее для админки: фильтр, навигация, разбор контента и кнопок."""
 from __future__ import annotations
 
+import html as html_lib
 import json
+import logging
+import re
 import time
 
 from dataclasses import dataclass
@@ -19,7 +22,18 @@ from aiogram.types import (
 
 from bot.content import extract_media
 
+log = logging.getLogger(__name__)
+
 BACK = "⬅️ Назад"
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+FALLBACK_ERROR_TEXT = (
+    "⚠️ Не получилось показать этот экран — текст оказался слишком длинным "
+    "или в нём символы, которые Telegram не принял. Ничего не потерялось, "
+    "данные сохранены как есть. Открой раздел ещё раз; если это повторится "
+    "на одном и том же пункте — сократи или упрости в нём текст."
+)
 
 
 class AdminFilter(BaseFilter):
@@ -48,6 +62,11 @@ class FunnelImport(StatesGroup):
 
 
 class MaterialAdd(StatesGroup):
+    waiting_content = State()
+    waiting_buttons = State()
+
+
+class RepeatStartAdd(StatesGroup):
     waiting_content = State()
     waiting_buttons = State()
 
@@ -102,13 +121,29 @@ class MenuRef:
 
 
 async def show(target: "Message | CallbackQuery | MenuRef", text: str, markup=None) -> Message | None:
-    """Показать экран: правим сообщение меню, если оно есть, иначе шлём новое."""
+    """Показать экран: правим сообщение меню, если оно есть, иначе шлём новое.
+
+    Что бы ни случилось при отрисовке (например, текст оказался длиннее лимита
+    Telegram или в нём затесались символы, ломающие HTML-разметку), эта функция
+    не должна вылететь исключением наружу: если она это сделает, вызывающий
+    хендлер не дойдёт до `call.answer()`, и кнопка в Telegram будет вечно
+    крутиться, как будто бот завис. Поэтому при неудаче мы логируем причину
+    и показываем короткое запасное сообщение вместо падения.
+    """
     if isinstance(target, CallbackQuery):
         bot, chat_id, message_id = target.message.bot, target.message.chat.id, target.message.message_id
     elif isinstance(target, MenuRef):
         bot, chat_id, message_id = target.bot, target.chat_id, target.message_id
     else:
-        return await target.answer(text, reply_markup=markup, disable_web_page_preview=True)
+        try:
+            return await target.answer(text, reply_markup=markup, disable_web_page_preview=True)
+        except Exception:  # noqa: BLE001 — не даём битому тексту оставить чат без ответа
+            log.exception("show(): не смог отправить сообщение с экраном")
+            try:
+                return await target.answer(FALLBACK_ERROR_TEXT, reply_markup=markup)
+            except Exception:  # noqa: BLE001
+                log.exception("show(): не смог отправить даже запасное сообщение")
+                return None
 
     try:
         return await bot.edit_message_text(
@@ -126,7 +161,15 @@ async def show(target: "Message | CallbackQuery | MenuRef", text: str, markup=No
         )
     except Exception:  # noqa: BLE001 — не вышло (сообщение слишком старое/удалено) — шлём новое
         pass
-    return await bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
+    try:
+        return await bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001 — тот же битый/слишком длинный текст добьёт и это сообщение
+        log.exception("show(): не смог отрисовать экран, показываю запасное сообщение")
+        try:
+            return await bot.send_message(chat_id, FALLBACK_ERROR_TEXT, reply_markup=markup)
+        except Exception:  # noqa: BLE001
+            log.exception("show(): не смог отправить даже запасное сообщение")
+            return None
 
 
 def message_text(message: Message) -> str | None:
@@ -170,7 +213,50 @@ def buttons_hint(buttons_json: str | None) -> str:
 
 
 def preview(text: str | None, limit: int = 60) -> str:
+    """Короткое превью текста для списков и подписей кнопок.
+
+    Текст хранится в БД в HTML-разметке (жирный, ссылки — как их отдаёт
+    Telegram). Раньше здесь резали эту HTML-строку по количеству символов
+    "как есть": на длинном или отформатированном тексте обрезка нередко
+    попадала внутрь тега (например, середина `<a href="...">`) или сущности
+    (`&amp;`), и получившийся HTML был битым. Telegram отказывался показать
+    такой экран ("can't parse entities"), а бот из-за этого не успевал
+    ответить на нажатие — кнопка крутилась и ничего не происходило.
+    Теперь сначала снимаем разметку и получаем чистый текст, режем уже его
+    и лишь потом (если нужно) экранируем спецсимволы — так результат всегда
+    валиден, сколько бы тегов или ссылок ни было в оригинале.
+    """
     if not text:
         return "без текста"
-    flat = " ".join(text.split())
-    return flat[:limit] + ("…" if len(flat) > limit else "")
+    plain = html_lib.unescape(_TAG_RE.sub("", text))
+    flat = " ".join(plain.split())
+    if not flat:
+        return "без текста"
+    cut = flat[:limit]
+    suffix = "…" if len(flat) > limit else ""
+    return html_lib.escape(cut) + suffix
+
+
+def safe_excerpt(text: str | None, limit: int = 3000) -> str:
+    """Текст «как есть» для экранов вида «Сейчас: ...» / карточка блока.
+
+    Короткий текст показываем целиком, с исходным форматированием — риска
+    нет. Длинный (ближе к лимиту сообщения Telegram в 4096 символов, плюс
+    заголовок экрана) обрезать так же наивно, как раньше делал preview(),
+    опасно: можно разорвать тег или сущность и сломать весь экран (см.
+    preview() выше) — или просто не влезть в лимит и получить
+    `MESSAGE_TOO_LONG`. Поэтому для длинного текста снимаем разметку и
+    показываем чистый обрезанный фрагмент с пометкой: обрезано только тут,
+    в БД и при отправке пользователю текст остаётся полным.
+    """
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    plain = html_lib.unescape(_TAG_RE.sub("", text))
+    flat = " ".join(plain.split())
+    return (
+        html_lib.escape(flat[:limit]) + "…\n\n"
+        "<i>Текст длиннее лимита показа — тут обрезан для примера, "
+        "пользователю уйдёт полностью и с форматированием.</i>"
+    )

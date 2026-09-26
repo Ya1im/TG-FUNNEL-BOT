@@ -11,7 +11,7 @@ from bot.backup import make_backup
 from bot.config import Config
 from bot.deps import Deps
 from bot.handlers.admin.broadcast import parse_schedule
-from bot.handlers.admin.common import parse_buttons, preview
+from bot.handlers.admin.common import parse_buttons, preview, safe_excerpt
 from tests.conftest import fresh_dispatcher
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -77,9 +77,60 @@ def test_parse_buttons():
     ]
 
 
+def _assert_valid_telegram_html(text: str) -> None:
+    """Грубая имитация проверки HTML, которую делает Telegram: теги должны
+    быть закрыты и правильно вложены, иначе бот получит `can't parse
+    entities` и не сможет показать сообщение."""
+    from html.parser import HTMLParser
+
+    class _Strict(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            assert self.stack and self.stack[-1] == tag, f"незакрытый/неверно вложенный <{tag}>"
+            self.stack.pop()
+
+    parser = _Strict()
+    parser.feed(text)
+    parser.close()
+    assert not parser.stack, f"незакрытые теги: {parser.stack}"
+
+
 def test_preview_shortens():
     assert preview(None) == "без текста"
     assert preview("а" * 100).endswith("…")
+
+
+def test_preview_never_breaks_html_on_long_rich_text():
+    """Регресс: раньше preview() резала HTML "как есть" и на длинном
+    отформатированном тексте обрезка попадала внутрь тега/сущности —
+    получившийся битый HTML Telegram не принимал, и кнопка «Тексты и
+    кнопки» / список материалов зависала (шла загрузка и ничего не
+    происходило), потому что show() падал раньше, чем хендлер успевал
+    ответить на callback."""
+    rich_text = (
+        "<b>Заголовок</b> с очень длинным описанием и ссылкой "
+        '<a href="https://example.com/some/very/long/path?x=1&amp;y=2">переходи сюда</a> '
+        "а также амперсанд Tom &amp; Jerry, и ещё текста " + "слово " * 40
+    )
+    for limit in range(1, 80):
+        _assert_valid_telegram_html(preview(rich_text, limit))
+
+
+def test_safe_excerpt_short_text_passthrough_and_long_text_stays_valid():
+    assert safe_excerpt(None) == ""
+    short = "<b>жирный</b> короткий текст"
+    assert safe_excerpt(short) == short  # короткий текст не трогаем — форматирование сохраняется
+
+    long_rich = "<b>Материал</b>: " + "<i>слово</i> " * 500 + '<a href="https://x.test">ссылка</a>'
+    excerpt = safe_excerpt(long_rich, limit=200)
+    _assert_valid_telegram_html(excerpt)
+    assert len(excerpt) < len(long_rich)
 
 
 async def test_backup_creates_file(db):

@@ -15,6 +15,7 @@ ROUTER_MODULES = [
     "bot.handlers.admin.media",
     "bot.handlers.admin.funnel",
     "bot.handlers.admin.material",
+    "bot.handlers.admin.repeat_start",
     "bot.handlers.admin.settings",
     "bot.handlers.admin.stats",
     "bot.handlers.admin.broadcast",

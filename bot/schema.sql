@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS material_blocks (
     created_at   INTEGER NOT NULL
 );
 
+-- То же самое, что material_blocks, но для ответа на повторный /start:
+-- админ собирает произвольную последовательность сообщений (текст/медиа/кнопки)
+-- вместо одного фиксированного текста.
+CREATE TABLE IF NOT EXISTS repeat_start_blocks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    position     INTEGER NOT NULL,
+    text         TEXT,
+    media_id     INTEGER REFERENCES media(id) ON DELETE SET NULL,
+    buttons_json TEXT,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_steps (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
