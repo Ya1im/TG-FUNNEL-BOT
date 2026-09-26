@@ -80,7 +80,9 @@ async def main() -> None:
 
     deps = Deps.build(config, db, bot)
     await migrate_repeat_start_blocks(deps)
-    deps.engine = BroadcastEngine(bot, deps.users, deps.broadcasts, deps.limiter)
+    deps.engine = BroadcastEngine(
+        bot, deps.users, deps.broadcasts, deps.limiter, gate=deps.gate, settings=deps.settings
+    )
     scheduler = Scheduler(
         bot=bot,
         users=deps.users,

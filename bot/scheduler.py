@@ -6,14 +6,14 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from bot.content import apply_placeholders
-from bot.keyboards import subscribe_kb
+from bot.reminder import send_reminder
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
 
 log = logging.getLogger(__name__)
 
 GATE_RETRY_SECONDS = 6 * 3600     # не подписан — напомним через 6 часов
+GATE_CACHE_SECONDS = 300         # свежий результат проверки можно не повторять 5 минут
 GATE_MAX_ATTEMPTS = 3             # столько напоминаний, потом шаг пропускаем
 ERROR_RETRY_SECONDS = 30 * 60
 ERROR_MAX_ATTEMPTS = 3
@@ -94,15 +94,31 @@ class Scheduler:
         queue_id = row["queue_id"]
 
         if row["requires_subscription"]:
-            if not await self.gate.check(user_id):
-                if row["attempts"] >= GATE_MAX_ATTEMPTS:
+            state = await self.gate.status(user_id, cached_seconds=GATE_CACHE_SECONDS)
+            if state == "error":
+                # Telegram не ответил — это не «отписался», напоминать нельзя
+                if row["attempts"] + 1 >= ERROR_MAX_ATTEMPTS:
+                    await self.funnel.finish(queue_id, "failed", "не смог проверить подписку")
+                    stats["failed"] += 1
+                else:
+                    await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, "не смог проверить подписку")
+                    stats["held"] += 1
+                return
+            if state == "no":
+                if row["on_unsub"] != "remind":
+                    await self.funnel.finish(queue_id, "skipped", "нет подписки")
+                    stats["skipped"] += 1
+                    return
+                max_attempts = await self._int_setting("gate_max_attempts", GATE_MAX_ATTEMPTS)
+                if row["attempts"] >= max_attempts:
                     await self.funnel.finish(queue_id, "skipped", "нет подписки")
                     stats["skipped"] += 1
                     return
                 if user_id not in reminded:
                     await self._send_reminder(user_id)
                     reminded.add(user_id)
-                await self.funnel.postpone(queue_id, GATE_RETRY_SECONDS, "нет подписки")
+                hours = await self._int_setting("gate_retry_hours", GATE_RETRY_SECONDS // 3600)
+                await self.funnel.postpone(queue_id, hours * 3600, "нет подписки")
                 stats["held"] += 1
                 return
 
@@ -127,13 +143,9 @@ class Scheduler:
                 await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, outcome.error)
                 stats["failed"] += 1
 
+    async def _int_setting(self, key: str, default: int) -> int:
+        value = await self.settings.get_int(key)
+        return value if value and value > 0 else default
+
     async def _send_reminder(self, user_id: int) -> None:
-        text = apply_placeholders(
-            await self.settings.get("reminder_text"), await self.settings.get("channel_url")
-        )
-        kb = await subscribe_kb(self.settings)
-
-        async def action():
-            return await self.bot.send_message(user_id, text, reply_markup=kb)
-
-        await safe_send(action, chat_id=user_id, users=self.users, limiter=self.limiter)
+        await send_reminder(self.bot, self.settings, self.users, self.limiter, user_id)

@@ -55,6 +55,23 @@ def fmt_time(ts: int | None) -> str:
     return datetime.fromtimestamp(ts, TZ).strftime("%d.%m %H:%M")
 
 
+SUB_MODE_LABELS = {
+    "off": "выключена — шлём всем из сегмента",
+    "skip": "включена — неподписанным не шлём",
+    "remind": "включена — неподписанным шлём напоминание вместо рассылки",
+}
+NEXT_SUB_MODE = {"off": "skip", "skip": "remind", "remind": "off"}
+
+
+def _stats_line(stats: dict[str, int]) -> str:
+    parts = [f"отправлено {stats['sent']}", f"заблокировали {stats['blocked']}", f"ошибок {stats['failed']}"]
+    if stats.get("skipped"):
+        parts.append(f"пропущено (не подписаны) {stats['skipped']}")
+    if stats.get("reminded"):
+        parts.append(f"напоминание получили {stats['reminded']}")
+    return ", ".join(parts)
+
+
 STATUS_LABELS = {
     "draft": "черновик",
     "queued": "запланирована",
@@ -73,8 +90,7 @@ async def broadcast_screen(target, deps) -> None:
         when = fmt_time(row["scheduled_at"] or row["created_at"])
         status = STATUS_LABELS.get(row["status"], row["status"])
         lines.append(
-            f"#{row['id']} {when} — {status}: отправлено {stats['sent']}, "
-            f"заблокировали {stats['blocked']}, ошибок {stats['failed']}"
+            f"#{row['id']} {when} — {status}: {_stats_line(stats)}"
         )
         rows.append([(f"📨 #{row['id']} · {when} · {status}", f"a:bc:o:{row['id']}")])
     text = HINT + "\n\n<b>Последние рассылки</b> (нажми, чтобы открыть или удалить):\n" + (
@@ -96,16 +112,32 @@ async def broadcast_card(target, deps, broadcast_id: int) -> None:
         f"📨 <b>Рассылка #{broadcast_id}</b> — {STATUS_LABELS.get(row['status'], row['status'])}\n\n"
         f"Сообщений: {len(messages)}\n"
         f"Получатели: {label} — {stats['total']}\n"
-        f"Отправлено {stats['sent']}, заблокировали {stats['blocked']}, ошибок {stats['failed']}"
+        f"🔔 Проверка подписки: {SUB_MODE_LABELS.get(row['sub_mode'], row['sub_mode'])}\n"
+        f"{_stats_line(stats)}"
     )
+    if row["status"] == "draft":
+        text += f"\n\n⏱ Время отправки: ~{_eta(stats['total'], deps)}"
     rows = [[("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")]]
     if row["status"] in ("draft", "queued"):
+        rows.append([("🔔 Проверка подписки: сменить", f"a:bc:sub:{broadcast_id}")])
         rows.append([("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")])
         rows.append([("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")])
     if row["status"] != "running":
         rows.append([("🗑 Удалить", f"a:bc:del:{broadcast_id}")])
     rows.append([("⬅️ К списку", "a:bc")])
     await show(target, text, kb(rows))
+
+
+@router.callback_query(F.data.startswith("a:bc:sub:"))
+async def cb_sub_mode(call: CallbackQuery, deps) -> None:
+    broadcast_id = int(call.data.split(":")[-1])
+    row = await deps.broadcasts.get(broadcast_id)
+    if row is None or row["status"] not in ("draft", "queued"):
+        await call.answer("Эту рассылку уже нельзя менять", show_alert=True)
+        return
+    await deps.broadcasts.set_sub_mode(broadcast_id, NEXT_SUB_MODE.get(row["sub_mode"], "off"))
+    await call.answer("Готово")
+    await broadcast_card(call, deps, broadcast_id)
 
 
 @router.callback_query(F.data.startswith("a:bc:o:"))
@@ -417,22 +449,7 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
         return
     broadcast_id, total = await deps.engine.prepare(call.from_user.id, segment, messages)
     await state.clear()
-    label = dict(SEGMENTS).get(segment, segment)
-    await show(
-        call,
-        f"📤 <b>Рассылка #{broadcast_id} готова</b>\n\n"
-        f"Сообщений: {len(messages)}\n"
-        f"Получателей: <b>{total}</b> ({label})\n\n"
-        f"⏱ Время отправки: ~{_eta(total, deps)}",
-        kb(
-            [
-                [("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")],
-                [("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")],
-                [("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")],
-                [("🗑 Удалить", f"a:bc:del:{broadcast_id}")],
-            ]
-        ),
-    )
+    await broadcast_card(call, deps, broadcast_id)
     await call.answer()
 
 

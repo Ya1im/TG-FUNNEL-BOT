@@ -24,17 +24,19 @@ class FunnelRepo:
         media_id: int | None = None,
         buttons: list[dict] | None = None,
         requires_subscription: bool = False,
+        on_unsub: str = "skip",
     ) -> int:
         position = int(
             await self.db.fetchval("SELECT COALESCE(MAX(position), 0) + 1 FROM funnel_steps", default=1)
         )
         return await self.db.execute(
-            "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, text, "
-            "media_id, buttons_json, enabled, created_at) VALUES(?, ?, ?, ?, ?, ?, 1, ?)",
+            "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
+            "text, media_id, buttons_json, enabled, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 position,
                 int(delay_seconds),
                 1 if requires_subscription else 0,
+                on_unsub if on_unsub in ("skip", "remind") else "skip",
                 text,
                 media_id,
                 json.dumps(buttons or [], ensure_ascii=False),
@@ -43,7 +45,7 @@ class FunnelRepo:
         )
 
     async def update_step(self, step_id: int, **fields) -> None:
-        allowed = {"delay_seconds", "requires_subscription", "text", "media_id", "buttons_json", "enabled", "position"}
+        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
         sets, params = [], []
         for key, value in fields.items():
             if key in allowed:
@@ -105,7 +107,7 @@ class FunnelRepo:
         now = int(now if now is not None else time.time())
         return await self.db.fetchall(
             "SELECT us.id AS queue_id, us.user_id, us.step_id, us.attempts, us.due_at, "
-            "fs.text, fs.buttons_json, fs.requires_subscription, fs.position, "
+            "fs.text, fs.buttons_json, fs.requires_subscription, fs.on_unsub, fs.position, "
             "m.kind AS media_kind, m.file_id AS media_file_id, "
             "u.first_name, u.username, u.is_subscribed "
             "FROM user_steps us "
@@ -162,6 +164,7 @@ class FunnelRepo:
                 "position": s["position"],
                 "delay_seconds": s["delay_seconds"],
                 "requires_subscription": bool(s["requires_subscription"]),
+                "on_unsub": s["on_unsub"],
                 "text": s["text"],
                 "media_slug": s["media_slug"],
                 "buttons": json.loads(s["buttons_json"] or "[]"),
@@ -188,6 +191,8 @@ class FunnelRepo:
                 media_id=media_id,
                 buttons=item.get("buttons") or [],
                 requires_subscription=bool(item.get("requires_subscription")),
+                # старые выгрузки без поля напоминали автоматически — не меняем это молча
+                on_unsub=item.get("on_unsub") or ("remind" if item.get("requires_subscription") else "skip"),
             )
             if not item.get("enabled", True):
                 await self.update_step(step_id, enabled=0)

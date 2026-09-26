@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS funnel_steps (
     position              INTEGER NOT NULL,
     delay_seconds         INTEGER NOT NULL,
     requires_subscription INTEGER NOT NULL DEFAULT 0,
+    on_unsub              TEXT    NOT NULL DEFAULT 'skip',  -- skip | remind: что делать, если не подписан
     text                  TEXT,
     media_id              INTEGER REFERENCES media(id) ON DELETE SET NULL,
     buttons_json          TEXT,
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     messages_json TEXT    NOT NULL,   -- [{"chat_id":..,"message_id":..}]
     scheduled_at  INTEGER,
     status        TEXT    NOT NULL DEFAULT 'draft',  -- draft|queued|running|done|cancelled
+    sub_mode      TEXT    NOT NULL DEFAULT 'off',    -- off | skip | remind: проверка подписки перед отправкой
     started_at    INTEGER,
     finished_at   INTEGER
 );
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
 CREATE TABLE IF NOT EXISTS broadcast_targets (
     broadcast_id INTEGER NOT NULL,
     user_id      INTEGER NOT NULL,
-    status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|sent|blocked|failed
+    status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|sent|blocked|failed|skipped|reminded
     error        TEXT,
     PRIMARY KEY (broadcast_id, user_id)
 );

@@ -39,7 +39,30 @@ class Database:
 
     async def apply_schema(self) -> None:
         await self.conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        await self._migrate()
         await self.conn.commit()
+
+    async def _has_column(self, table: str, column: str) -> bool:
+        cur = await self.conn.execute(f"PRAGMA table_info({table})")
+        rows = await cur.fetchall()
+        await cur.close()
+        return any(r["name"] == column for r in rows)
+
+    async def _migrate(self) -> None:
+        """Добавляет колонки в базы, созданные до появления этих полей."""
+        if not await self._has_column("funnel_steps", "on_unsub"):
+            await self.conn.execute(
+                "ALTER TABLE funnel_steps ADD COLUMN on_unsub TEXT NOT NULL DEFAULT 'skip'"
+            )
+            # Шаги, у которых админ уже включил «только подписчикам», напоминали
+            # автоматически — сохраняем это поведение, дальше админ управляет сам.
+            await self.conn.execute(
+                "UPDATE funnel_steps SET on_unsub = 'remind' WHERE requires_subscription = 1"
+            )
+        if not await self._has_column("broadcasts", "sub_mode"):
+            await self.conn.execute(
+                "ALTER TABLE broadcasts ADD COLUMN sub_mode TEXT NOT NULL DEFAULT 'off'"
+            )
 
     async def close(self) -> None:
         if self._conn is not None:

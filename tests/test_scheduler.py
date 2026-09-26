@@ -28,7 +28,13 @@ class FakeGate:
 
     async def check(self, user_id):
         self.calls += 1
-        return self.subscribed
+        return self.subscribed is True
+
+    async def status(self, user_id, cached_seconds=0):
+        self.calls += 1
+        if self.subscribed == "error":
+            return "error"
+        return "yes" if self.subscribed else "no"
 
 
 async def build(db, bot=None, gate=None, now=1000):
@@ -73,7 +79,7 @@ async def test_tick_ignores_future_steps(db):
 async def test_gated_step_postponed_when_unsubscribed(db):
     gate = FakeGate(subscribed=False)
     scheduler, bot, _, funnel = await build(db, gate=gate)
-    await funnel.add_step(0, text="Закрытый инсайт", requires_subscription=True)
+    await funnel.add_step(0, text="Закрытый инсайт", requires_subscription=True, on_unsub="remind")
     await funnel.enqueue(1, now=0)
 
     stats = await scheduler.tick()
@@ -88,7 +94,7 @@ async def test_gated_step_skipped_after_three_reminders(db):
     gate = FakeGate(subscribed=False)
     scheduler, bot, _, funnel = await build(db)
     scheduler.gate = gate
-    await funnel.add_step(0, text="Закрытый", requires_subscription=True)
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True, on_unsub="remind")
     await funnel.enqueue(1, now=0)
 
     for _ in range(3):
@@ -106,7 +112,7 @@ async def test_gated_step_skipped_after_three_reminders(db):
 async def test_gated_step_sends_when_subscription_returns(db):
     gate = FakeGate(subscribed=False)
     scheduler, bot, _, funnel = await build(db, gate=gate)
-    await funnel.add_step(0, text="Закрытый", requires_subscription=True)
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True, on_unsub="remind")
     await funnel.enqueue(1, now=0)
     await scheduler.tick()
 
@@ -120,8 +126,8 @@ async def test_gated_step_sends_when_subscription_returns(db):
 async def test_one_reminder_per_user_per_tick(db):
     gate = FakeGate(subscribed=False)
     scheduler, bot, _, funnel = await build(db, gate=gate)
-    await funnel.add_step(0, text="Раз", requires_subscription=True)
-    await funnel.add_step(0, text="Два", requires_subscription=True)
+    await funnel.add_step(0, text="Раз", requires_subscription=True, on_unsub="remind")
+    await funnel.add_step(0, text="Два", requires_subscription=True, on_unsub="remind")
     await funnel.enqueue(1, now=0)
     await scheduler.tick()
     assert len(bot.sent) == 1
@@ -170,3 +176,53 @@ async def test_tick_calls_hooks(db):
 
 async def _record(calls, name):
     calls.append(name)
+
+
+async def test_unsubscribed_step_is_silently_skipped_by_default(db):
+    """Без явного выбора админа бот сам ничего не напоминает."""
+    scheduler, bot, _, funnel = await build(db, gate=FakeGate(subscribed=False))
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True)
+    await funnel.enqueue(1, now=0)
+
+    stats = await scheduler.tick()
+    assert stats["skipped"] == 1 and stats["held"] == 0
+    assert bot.sent == []
+    assert (await db.fetchone("SELECT status FROM user_steps"))["status"] == "skipped"
+
+
+async def test_check_error_never_sends_reminder(db):
+    scheduler, bot, _, funnel = await build(db, gate=FakeGate(subscribed="error"))
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True, on_unsub="remind")
+    await funnel.enqueue(1, now=0)
+
+    stats = await scheduler.tick()
+    assert stats["held"] == 1
+    assert bot.sent == []
+    row = await db.fetchone("SELECT status, attempts FROM user_steps")
+    assert row["status"] == "pending" and row["attempts"] == 1
+
+
+async def test_reminder_limit_comes_from_settings(db):
+    scheduler, bot, _, funnel = await build(db, gate=FakeGate(subscribed=False))
+    await scheduler.settings.set("gate_max_attempts", "1")
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True, on_unsub="remind")
+    await funnel.enqueue(1, now=0)
+
+    await scheduler.tick()
+    assert len(bot.sent) == 1
+    await db.execute("UPDATE user_steps SET due_at = 0")
+    stats = await scheduler.tick()
+    assert stats["skipped"] == 1 and len(bot.sent) == 1
+
+
+async def test_reminder_interval_comes_from_settings(db):
+    import time
+
+    scheduler, _, _, funnel = await build(db, gate=FakeGate(subscribed=False))
+    await scheduler.settings.set("gate_retry_hours", "1")
+    await funnel.add_step(0, text="Закрытый", requires_subscription=True, on_unsub="remind")
+    await funnel.enqueue(1, now=0)
+
+    await scheduler.tick()
+    due = (await db.fetchone("SELECT due_at FROM user_steps"))["due_at"]
+    assert due - time.time() < 3700

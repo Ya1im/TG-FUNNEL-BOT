@@ -841,3 +841,34 @@ async def test_repeat_start_via_dispatcher_skips_note_second_time(stack):
     session.requests.clear()
     await feed(dp, bot, message=make_message("/start", message_id=17))
     assert session.names() == ["SendMessage"]
+
+
+async def test_admin_cycles_subscription_check_mode_of_broadcast(stack):
+    """Проверка подписки в рассылке выключена, пока админ сам её не включит."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1)
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Привет!", user_id=ADMIN_ID, message_id=41))
+    await feed(dp, bot, callback=make_callback("a:bc:done", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:tosend", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:seg:all", user_id=ADMIN_ID))
+    broadcast = (await deps.broadcasts.recent(1))[0]
+    bid = broadcast["id"]
+    assert broadcast["sub_mode"] == "off"
+
+    for expected in ("skip", "remind", "off"):
+        await feed(dp, bot, callback=make_callback(f"a:bc:sub:{bid}", user_id=ADMIN_ID))
+        assert (await deps.broadcasts.get(bid))["sub_mode"] == expected
+
+
+async def test_admin_toggles_unsub_reminder_of_funnel_step(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(0, text="закрытый", requires_subscription=True)
+    assert (await deps.funnel.get_step(step_id))["on_unsub"] == "skip"
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback(f"a:fun:unsub:{step_id}", user_id=ADMIN_ID))
+    assert (await deps.funnel.get_step(step_id))["on_unsub"] == "remind"
+    await feed(dp, bot, callback=make_callback(f"a:fun:unsub:{step_id}", user_id=ADMIN_ID))
+    assert (await deps.funnel.get_step(step_id))["on_unsub"] == "skip"

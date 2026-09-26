@@ -128,3 +128,28 @@ def test_human_delay():
     assert human_delay(1800) == "30 мин"
     assert human_delay(7200) == "2 ч"
     assert human_delay(259200) == "3 дн"
+
+
+async def test_on_unsub_defaults_to_skip_and_roundtrips_through_export(db):
+    from bot.repo.media import MediaRepo
+
+    funnel = FunnelRepo(db)
+    a = await funnel.add_step(0, text="a", requires_subscription=True)
+    b = await funnel.add_step(0, text="b", requires_subscription=True, on_unsub="remind")
+    assert (await funnel.get_step(a))["on_unsub"] == "skip"
+    assert (await funnel.get_step(b))["on_unsub"] == "remind"
+
+    raw = await funnel.export_json()
+    await funnel.import_json(raw, MediaRepo(db))
+    assert [s["on_unsub"] for s in await funnel.list_steps()] == ["skip", "remind"]
+
+
+async def test_import_of_old_export_without_on_unsub_keeps_old_behaviour(db):
+    import json
+
+    from bot.repo.media import MediaRepo
+
+    funnel = FunnelRepo(db)
+    raw = json.dumps([{"delay_seconds": 0, "requires_subscription": True, "text": "x"}])
+    await funnel.import_json(raw, MediaRepo(db))
+    assert (await funnel.list_steps())[0]["on_unsub"] == "remind"

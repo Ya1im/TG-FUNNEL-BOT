@@ -78,7 +78,13 @@ async def step_screen(target, deps, step_id: int) -> None:
         f"🔥 <b>Шаг прогрева</b>\n\n"
         f"⏱ Через: {human_delay(step['delay_seconds'])}\n"
         f"⚡️ Статус: {'включён' if step['enabled'] else 'выключен'}\n"
-        f"🔒 Только подписчикам: {'да' if step['requires_subscription'] else 'нет'}\n\n"
+        f"🔒 Только подписчикам: {'да' if step['requires_subscription'] else 'нет'}\n"
+        + (
+            f"🔔 Если не подписан: {'напомнить подписаться' if step['on_unsub'] == 'remind' else 'молча пропустить шаг'}\n"
+            if step["requires_subscription"]
+            else ""
+        )
+        + "\n"
         f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
         f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
         f"Текст:\n{step['text'] or '<i>без текста</i>'}"
@@ -94,6 +100,7 @@ async def step_screen(target, deps, step_id: int) -> None:
                     ("🔒 Подписка вкл/выкл", f"a:fun:gate:{step_id}"),
                     ("⏸ Вкл/выкл", f"a:fun:tgl:{step_id}"),
                 ],
+                [("🔔 Если не подписан: напомнить/пропустить", f"a:fun:unsub:{step_id}")],
                 [("⬆️ Выше", f"a:fun:up:{step_id}"), ("⬇️ Ниже", f"a:fun:dn:{step_id}")],
                 [("🗑 Удалить", f"a:fun:del:{step_id}")],
                 [("⬅️ К прогреву", "a:fun")],
@@ -117,6 +124,15 @@ async def cb_step_gate(call: CallbackQuery, deps) -> None:
     step_id = int(call.data.split(":")[-1])
     step = await deps.funnel.get_step(step_id)
     await deps.funnel.update_step(step_id, requires_subscription=0 if step["requires_subscription"] else 1)
+    await call.answer("Готово")
+    await step_screen(call, deps, step_id)
+
+
+@router.callback_query(F.data.startswith("a:fun:unsub:"))
+async def cb_step_unsub(call: CallbackQuery, deps) -> None:
+    step_id = int(call.data.split(":")[-1])
+    step = await deps.funnel.get_step(step_id)
+    await deps.funnel.update_step(step_id, on_unsub="skip" if step["on_unsub"] == "remind" else "remind")
     await call.answer("Готово")
     await step_screen(call, deps, step_id)
 

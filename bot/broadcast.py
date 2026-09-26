@@ -6,21 +6,28 @@ import time
 from typing import Awaitable, Callable
 
 from bot.content import ContentBlock
+from bot.reminder import send_reminder
 from bot.sender import BLOCKED, SENT, safe_send, send_block
 
 log = logging.getLogger(__name__)
 
 BATCH = 100
+SUB_CACHE_SECONDS = 300  # свежую проверку подписки в пределах рассылки не повторяем
 PROGRESS_EVERY = 5.0  # секунд между обновлениями прогресса
 
 
 class BroadcastEngine:
-    def __init__(self, bot, users, broadcasts, limiter=None, now: Callable[[], float] = time.time):
+    def __init__(
+        self, bot, users, broadcasts, limiter=None, now: Callable[[], float] = time.time,
+        gate=None, settings=None,
+    ):
         self.bot = bot
         self.users = users
         self.broadcasts = broadcasts
         self.limiter = limiter
         self.now = now
+        self.gate = gate
+        self.settings = settings
 
     async def prepare(
         self,
@@ -29,10 +36,11 @@ class BroadcastEngine:
         messages: list[dict],
         segment_value: str | None = None,
         scheduled_at: int | None = None,
+        sub_mode: str = "off",
     ) -> tuple[int, int]:
         """Создать рассылку и зафиксировать список получателей."""
         broadcast_id = await self.broadcasts.create(
-            created_by, segment, messages, segment_value, scheduled_at
+            created_by, segment, messages, segment_value, scheduled_at, sub_mode
         )
         user_ids = await self.users.segment_ids(segment, segment_value)
         await self.broadcasts.set_targets(broadcast_id, user_ids)
@@ -48,6 +56,7 @@ class BroadcastEngine:
             return await self.broadcasts.stats(broadcast_id)
 
         messages = await self.broadcasts.messages(broadcast_id)
+        sub_mode = broadcast["sub_mode"] if "sub_mode" in broadcast.keys() else "off"
         await self.broadcasts.set_status(broadcast_id, "running")
         last_progress = 0.0
 
@@ -56,7 +65,7 @@ class BroadcastEngine:
             if not targets:
                 break
             for user_id in targets:
-                status, error = await self._send_to(user_id, messages)
+                status, error = await self._deliver(user_id, messages, sub_mode)
                 await self.broadcasts.mark_target(broadcast_id, user_id, status, error)
                 if progress and self.now() - last_progress >= PROGRESS_EVERY:
                     last_progress = self.now()
@@ -71,6 +80,23 @@ class BroadcastEngine:
             await progress(stats)
         log.info("Рассылка #%s завершена: %s", broadcast_id, stats)
         return stats
+
+    async def _deliver(self, user_id: int, messages: list[dict], sub_mode: str) -> tuple[str, str | None]:
+        """Проверка подписки (если админ включил её для этой рассылки) и отправка."""
+        if sub_mode != "off" and self.gate is not None:
+            state = await self.gate.status(user_id, cached_seconds=SUB_CACHE_SECONDS)
+            if state == "error":
+                return "failed", "не смог проверить подписку"
+            if state == "no":
+                if sub_mode == "remind" and self.settings is not None:
+                    outcome = await send_reminder(
+                        self.bot, self.settings, self.users, self.limiter, user_id, "resub_reminder_text"
+                    )
+                    if outcome.status == BLOCKED:
+                        return BLOCKED, None
+                    return ("reminded", None) if outcome.ok else ("failed", outcome.error)
+                return "skipped", None
+        return await self._send_to(user_id, messages)
 
     async def _send_to(self, user_id: int, messages: list[dict]) -> tuple[str, str | None]:
         user = None

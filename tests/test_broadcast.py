@@ -15,6 +15,10 @@ class FakeBot:
         self.fail_for = fail_for or set()
         self.error = error or TelegramForbiddenError(method=METHOD, message="bot was blocked")
 
+    async def send_message(self, chat_id, text, reply_markup=None):
+        self.copied.append((chat_id, "reminder", text))
+        return "sent"
+
     async def copy_message(self, chat_id, from_chat_id, message_id):
         if chat_id in self.fail_for:
             raise self.error
@@ -152,3 +156,58 @@ async def test_delete_refuses_running_broadcast(db):
 
     assert await repo.delete(bid) is False
     assert await repo.get(bid) is not None
+
+
+class StubGate:
+    def __init__(self, result):
+        self.result = result  # {user_id: "yes"|"no"|"error"}
+
+    async def status(self, user_id, cached_seconds=0):
+        return self.result[user_id]
+
+
+async def _sub_engine(db, sub_mode, result):
+    from bot.repo.settings import SettingsRepo
+
+    users, repo = await setup(db)
+    bot = FakeBot()
+    engine = BroadcastEngine(bot, users, repo, gate=StubGate(result), settings=SettingsRepo(db))
+    bid, _ = await engine.prepare(99, "all", MESSAGES, sub_mode=sub_mode)
+    return engine, bot, repo, bid
+
+
+async def test_sub_mode_off_never_checks_subscription(db):
+    engine, bot, repo, bid = await _sub_engine(db, "off", {1: "no", 2: "no", 3: "no"})
+    stats = await engine.run(bid)
+    assert stats["sent"] == 3 and stats["skipped"] == 0
+
+
+async def test_sub_mode_skip_sends_only_to_subscribed(db):
+    engine, bot, repo, bid = await _sub_engine(db, "skip", {1: "yes", 2: "no", 3: "yes"})
+    stats = await engine.run(bid)
+    assert stats["sent"] == 2 and stats["skipped"] == 1
+    assert {c[0] for c in bot.copied} == {1, 3}
+
+
+async def test_sub_mode_remind_sends_reminder_instead_of_content(db):
+    engine, bot, repo, bid = await _sub_engine(db, "remind", {1: "yes", 2: "no", 3: "yes"})
+    stats = await engine.run(bid)
+    assert stats["sent"] == 2 and stats["reminded"] == 1
+    assert [c for c in bot.copied if c[0] == 2 and c[1] == "reminder"]
+    assert not [c for c in bot.copied if c[0] == 2 and c[1] == 99]
+
+
+async def test_sub_check_error_is_failed_not_reminded(db):
+    engine, bot, repo, bid = await _sub_engine(db, "remind", {1: "error", 2: "yes", 3: "yes"})
+    stats = await engine.run(bid)
+    assert stats["failed"] == 1 and stats["reminded"] == 0
+    assert not [c for c in bot.copied if c[0] == 1]
+
+
+async def test_set_sub_mode_rejects_garbage(db):
+    _, repo = await setup(db)
+    bid = await repo.create(1, "all", MESSAGES)
+    await repo.set_sub_mode(bid, "spam")
+    assert (await repo.get(bid))["sub_mode"] == "off"
+    await repo.set_sub_mode(bid, "skip")
+    assert (await repo.get(bid))["sub_mode"] == "skip"

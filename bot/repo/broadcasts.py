@@ -7,6 +7,9 @@ import time
 from bot.db import Database
 
 
+SUB_MODES = ("off", "skip", "remind")
+
+
 class BroadcastsRepo:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -18,10 +21,11 @@ class BroadcastsRepo:
         messages: list[dict],
         segment_value: str | None = None,
         scheduled_at: int | None = None,
+        sub_mode: str = "off",
     ) -> int:
         return await self.db.execute(
             "INSERT INTO broadcasts(created_at, created_by, segment, segment_value, "
-            "messages_json, scheduled_at, status) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            "messages_json, scheduled_at, status, sub_mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(time.time()),
                 created_by,
@@ -30,6 +34,7 @@ class BroadcastsRepo:
                 json.dumps(messages, ensure_ascii=False),
                 scheduled_at,
                 "queued" if scheduled_at else "draft",
+                sub_mode if sub_mode in SUB_MODES else "off",
             ),
         )
 
@@ -61,6 +66,11 @@ class BroadcastsRepo:
                 "UPDATE broadcasts SET status = ? WHERE id = ?", (status, broadcast_id)
             )
 
+    async def set_sub_mode(self, broadcast_id: int, mode: str) -> None:
+        if mode not in SUB_MODES:
+            mode = "off"
+        await self.db.execute("UPDATE broadcasts SET sub_mode = ? WHERE id = ?", (mode, broadcast_id))
+
     async def pending_targets(self, broadcast_id: int, limit: int = 100) -> list[int]:
         rows = await self.db.fetchall(
             "SELECT user_id FROM broadcast_targets WHERE broadcast_id = ? AND status = 'pending' "
@@ -83,7 +93,7 @@ class BroadcastsRepo:
             "GROUP BY status",
             (broadcast_id,),
         )
-        stats = {"pending": 0, "sent": 0, "blocked": 0, "failed": 0}
+        stats = {"pending": 0, "sent": 0, "blocked": 0, "failed": 0, "skipped": 0, "reminded": 0}
         for row in rows:
             stats[row["status"]] = row["cnt"]
         stats["total"] = sum(stats.values())
