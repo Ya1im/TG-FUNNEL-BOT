@@ -153,3 +153,86 @@ async def test_import_of_old_export_without_on_unsub_keeps_old_behaviour(db):
     raw = json.dumps([{"delay_seconds": 0, "requires_subscription": True, "text": "x"}])
     await funnel.import_json(raw, MediaRepo(db))
     assert (await funnel.list_steps())[0]["on_unsub"] == "remind"
+
+
+async def test_add_step_backfills_existing_users_from_their_own_material_time(db):
+    users = UsersRepo(db)
+    funnel = FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = ? WHERE tg_id = 1", (1000 - 3 * 86400,))
+    await users.upsert(2)
+    await db.execute("UPDATE users SET material_sent_at = ? WHERE tg_id = 2", (1000 - 3600,))
+
+    step_id = await funnel.add_step(delay_seconds=7200, text="Новый шаг")
+
+    rows = {r["user_id"]: r["due_at"] for r in await db.fetchall(
+        "SELECT user_id, due_at FROM user_steps WHERE step_id = ?", (step_id,)
+    )}
+    assert rows[1] == 1000 - 3 * 86400 + 7200   # у давнего due_at уже в прошлом
+    assert rows[2] == 1000 - 3600 + 7200         # у недавнего — своя дата + задержка
+
+
+async def test_add_step_does_not_backfill_user_without_material(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)  # material_sent_at ещё NULL
+    step_id = await funnel.add_step(delay_seconds=3600, text="Шаг")
+    assert await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)) == []
+
+
+async def test_add_step_skips_blocked_users(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
+    await users.mark_blocked(1)
+    step_id = await funnel.add_step(delay_seconds=3600, text="Шаг")
+    assert await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)) == []
+
+
+async def test_backfill_step_skips_users_already_sent_a_later_position(db):
+    """Позиция ниже уже существующего отправленного шага достижима только через add_step +
+    move_step (позиции всегда возрастают при создании) — переупорядочивание бэкфилл не вызывает
+    (см. Global Constraints), поэтому здесь конечное состояние после реордера собирается напрямую,
+    а backfill_step вызывается так, как его вызвал бы add_step в момент создания на итоговой позиции."""
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await users.upsert(2)
+    await db.execute("UPDATE users SET material_sent_at = 0 WHERE tg_id IN (1, 2)")
+    later_id = await funnel.add_step(delay_seconds=100, text="Уже существующий шаг")
+    await db.execute(
+        "UPDATE user_steps SET status = 'sent' WHERE step_id = ? AND user_id = 1", (later_id,)
+    )  # пользователь 1 уже получил этот шаг, пользователь 2 — ещё нет (pending)
+
+    mid_id = await db.execute(
+        "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
+        "text, media_id, buttons_json, enabled, created_at) VALUES(0, 50, 0, 'skip', "
+        "'Вставлен перед уже отправленным', NULL, '[]', 1, 0)"
+    )  # позиция 0 — ниже later_id, как если бы шаг вставили и подняли его выше через move_step
+
+    added = await funnel.backfill_step(mid_id, position=0, delay_seconds=50)
+
+    got_mid = {r["user_id"] for r in await db.fetchall(
+        "SELECT user_id FROM user_steps WHERE step_id = ?", (mid_id,)
+    )}
+    assert got_mid == {2}  # пользователю 1 «более ранний» шаг задним числом не пришёл
+    assert added == 1
+
+
+async def test_backfill_step_treats_skipped_later_step_as_not_ahead(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 0 WHERE tg_id = 1")
+    later_id = await funnel.add_step(delay_seconds=100, text="Более поздний")
+    await db.execute(
+        "UPDATE user_steps SET status = 'skipped' WHERE step_id = ? AND user_id = 1", (later_id,)
+    )
+
+    mid_id = await db.execute(
+        "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
+        "text, media_id, buttons_json, enabled, created_at) VALUES(0, 50, 0, 'skip', "
+        "'Вставленный пораньше', NULL, '[]', 1, 0)"
+    )
+
+    await funnel.backfill_step(mid_id, position=0, delay_seconds=50)
+
+    got = await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ? AND user_id = 1", (mid_id,))
+    assert got != []  # skipped — не «дальше», шаг всё равно ставится

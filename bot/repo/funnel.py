@@ -29,7 +29,7 @@ class FunnelRepo:
         position = int(
             await self.db.fetchval("SELECT COALESCE(MAX(position), 0) + 1 FROM funnel_steps", default=1)
         )
-        return await self.db.execute(
+        step_id = await self.db.execute(
             "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
             "text, media_id, buttons_json, enabled, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (
@@ -43,6 +43,22 @@ class FunnelRepo:
                 int(time.time()),
             ),
         )
+        await self.backfill_step(step_id, position, int(delay_seconds))
+        return step_id
+
+    async def backfill_step(self, step_id: int, position: int, delay_seconds: int) -> int:
+        """Ставит уже существующим активным пользователям только что созданный/включённый шаг —
+        по их личной дате получения материала, минуя тех, кто уже получил более поздний шаг."""
+        cur = await self.db.conn.execute(
+            "INSERT OR IGNORE INTO user_steps(user_id, step_id, due_at, status) "
+            "SELECT u.tg_id, ?, u.material_sent_at + ?, 'pending' FROM users u "
+            "WHERE u.material_sent_at IS NOT NULL AND u.status = 'active' "
+            "AND NOT EXISTS (SELECT 1 FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.user_id = u.tg_id AND fs.position > ? AND us.status = 'sent')",
+            (step_id, int(delay_seconds), int(position)),
+        )
+        await self.db.conn.commit()
+        return cur.rowcount or 0
 
     async def update_step(self, step_id: int, **fields) -> None:
         allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
