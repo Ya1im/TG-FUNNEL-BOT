@@ -1131,9 +1131,31 @@ async def test_admin_role_is_rejected_directly_by_access_router(stack):
     assert session.calls("AnswerCallbackQuery")[0].show_alert is True
 
 
+async def test_access_link_add_and_delete_rejected_for_role_admin(stack):
+    """Task 3 review: guard'ы в каждом хендлере a:acc:* (не только в a:acc и a:acc:link:*),
+    включая удаление реального клиента по его tg_id."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    await deps.access.add(888, "Другой клиент", None, role="stats")
+
+    for data in ("a:acc:link", "a:acc:add", "a:acc:add:stats", "a:acc:add:admin"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+
+    for data in ("a:acc:del:888", "a:acc:delok:888"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+    assert await deps.access.role(888) == "stats"  # реальный клиент не удалился
+
+
 async def test_content_admin_does_not_see_or_reach_owner_actions(stack):
     dp, bot, session, deps = stack
     await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    await deps.users.upsert(42, "u42", "Юзер")  # чтобы было что "обнулить", если бы guard не сработал
 
     text, markup = await _open(dp, bot, session, "a:set", user_id=VIEWER_ID)
     assert "a:acc" not in _callbacks(markup) and "a:set:report" not in _callbacks(markup)
@@ -1145,9 +1167,15 @@ async def test_content_admin_does_not_see_or_reach_owner_actions(stack):
     text, markup = await _open(dp, bot, session, "a:stat", user_id=VIEWER_ID)
     assert "a:stat:reset" not in _callbacks(markup) and "a:stat:chat" not in _callbacks(markup)
 
+    total_before = (await deps.users.stats())["total"]
+    assert total_before >= 1  # seed действительно есть, иначе проверка ниже бессмысленна
+
     session.requests.clear()
     await feed(dp, bot, callback=make_callback("a:stat:reset:go", user_id=VIEWER_ID))
-    assert (await deps.users.stats())["total"] >= 0  # ничего не обнулилось
+    # Настоящий сброс удалил бы всех пользователей и отредактировал сообщение —
+    # ничего из этого не должно случиться под ролью admin.
+    assert (await deps.users.stats())["total"] == total_before
+    assert "EditMessageText" not in session.names()
     answer = session.calls("AnswerCallbackQuery")[0]
     assert answer.show_alert is True
 
@@ -1161,6 +1189,47 @@ async def test_content_admin_cannot_reach_channel_or_report_chat_handlers_direct
         await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
         assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
         assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+
+
+async def test_content_admin_cannot_force_save_pending_channel(stack):
+    """a:set:force сохраняет канал в обход проверки прав Telegram. Пустой probe без
+    предварительно выставленного pending_id ничего не докажет (хендлер и так молча
+    отвечает "Нечего сохранять") — поэтому сперва выставляем pending_id так, как это
+    сделал бы владелец через a:set:channel -> on_channel_value, когда бот не админ
+    канала, и только потом дёргаем a:set:force под ролью admin."""
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    key = StorageKey(bot_id=bot.id, chat_id=VIEWER_ID, user_id=VIEWER_ID)
+    ctx = FSMContext(storage=dp.storage, key=key)
+    await ctx.update_data(
+        field="channel",
+        pending_id="-100123456",
+        pending_title="Тестовый канал",
+        pending_url="https://t.me/testchan",
+    )
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set:force", user_id=VIEWER_ID))
+    assert (await deps.settings.get("channel_id")).strip() == ""
+    assert (await deps.settings.get("channel_title")).strip() == ""
+    assert (await deps.settings.get("channel_url")).strip() == ""
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
+
+
+async def test_content_admin_cannot_open_stats_reset_confirm_screen(stack):
+    """a:stat:reset — сам экран подтверждения обнуления, не только a:stat:reset:go."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:reset", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
 
 
 async def test_content_admin_does_not_see_delete_button_on_broadcast_card(stack):
@@ -1197,3 +1266,26 @@ async def test_owner_still_sees_all_owner_buttons(stack):
 
     _, markup = await _open(dp, bot, session, "a:stat")
     assert "a:stat:reset" in _callbacks(markup) and "a:stat:chat" in _callbacks(markup)
+
+
+async def test_admin_role_revoked_access_denied_on_very_next_action(stack):
+    """Review Focus: отзыв доступа (deps.access.remove) должен блокировать САМОЕ
+    СЛЕДУЮЩЕЕ действие клиента — ни /admin, ни a:-колбэки не должны кэшировать роль
+    где-либо между хендлерами."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "SendMessage" in session.names() or "EditMessageText" in session.names()
+
+    await deps.access.remove(VIEWER_ID)
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "SendMessage" not in session.names() and "EditMessageText" not in session.names()
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert await deps.access.role(VIEWER_ID) is None
