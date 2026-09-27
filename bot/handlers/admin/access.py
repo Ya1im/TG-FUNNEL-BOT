@@ -1,17 +1,19 @@
-"""Доступ «только статистика»: список клиентов, пригласительная ссылка, добавление по ID."""
+"""Доступ клиентов к боту: список, пригласительная ссылка, добавление по ID, выбор роли (stats/admin)."""
 from __future__ import annotations
 
 import html
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from bot.handlers.admin.common import ViewerAdd, kb, screen_text, show
+from bot.handlers.admin.common import ViewerAdd, kb, require_owner, screen_text, show
 
 router = Router(name="admin-access")
 
-HINT = "Клиент получает одну команду — /stats. Админка и рассылки ему недоступны."
+HINT = "Клиент получает доступ по выбранной роли: «статистика» — только /stats, «полный» — вся админка кроме опасных действий."
+
+ROLE_LABELS = {"stats": "📊 stats", "admin": "🛠 admin"}
 
 
 def _title(row) -> str:
@@ -20,19 +22,33 @@ def _title(row) -> str:
     return f"{name}{handle}"
 
 
+def _role_choice_kb(prefix: str, back: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора роли для приглашения/добавления: prefix + ":stats"/":admin"."""
+    return kb([
+        [("📊 Только статистика", f"{prefix}:stats")],
+        [("🛠 Полный доступ", f"{prefix}:admin")],
+        [("⬅️ Отмена", back)],
+    ])
+
+
 async def access_screen(target, deps) -> None:
-    viewers = await deps.viewers.list()
-    lines = [f"{i}. {_title(v)} · <code>{v['tg_id']}</code>" for i, v in enumerate(viewers, start=1)]
+    viewers = await deps.access.list()
+    lines = [
+        f"{i}. {_title(v)} · <code>{v['tg_id']}</code> · {ROLE_LABELS.get(v['role'], v['role'])}"
+        for i, v in enumerate(viewers, start=1)
+    ]
     rows = [[("🔗 Пригласительная ссылка", "a:acc:link")], [("➕ Добавить по ID", "a:acc:add")]]
     for v in viewers:
         rows.append([(f"🗑 {(v['name'] or str(v['tg_id']))[:24]}", f"a:acc:del:{v['tg_id']}")])
     rows.append([("⬅️ Назад", "a:set")])
     body = "\n".join(lines) if lines else "Пока никого — создайте пригласительную ссылку."
-    await show(target, screen_text("👥 Доступ к статистике", HINT, body), kb(rows))
+    await show(target, screen_text("👥 Доступ к админке", HINT, body), kb(rows))
 
 
 @router.callback_query(F.data == "a:acc")
 async def cb_access(call: CallbackQuery, deps, state: FSMContext) -> None:
+    if not await require_owner(call, deps):
+        return
     await state.clear()
     await access_screen(call, deps)
     await call.answer()
@@ -40,28 +56,65 @@ async def cb_access(call: CallbackQuery, deps, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "a:acc:link")
 async def cb_link(call: CallbackQuery, deps) -> None:
-    token = await deps.viewers.create_invite(created_by=call.from_user.id)
-    me = await call.bot.me()
-    url = f"https://t.me/{me.username}?start=v_{token}"
+    if not await require_owner(call, deps):
+        return
     await show(
         call,
         screen_text(
-            "🔗 Ссылка для клиента",
-            "Одноразовая, действует 7 дней. Отправьте клиенту: он нажмёт «Запустить» и получит /stats.",
-            f"<code>{url}</code>",
+            "🔗 Пригласительная ссылка",
+            "Какой доступ получит клиент, который перейдёт по ссылке?",
         ),
-        kb([[("🔗 Новая ссылка", "a:acc:link")], [("⬅️ Назад", "a:acc")]]),
+        _role_choice_kb("a:acc:link", "a:acc"),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.in_(("a:acc:link:stats", "a:acc:link:admin")))
+async def cb_link_role(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
+    role = call.data.rsplit(":", 1)[-1]
+    token = await deps.access.create_invite(created_by=call.from_user.id, role=role)
+    me = await call.bot.me()
+    url = f"https://t.me/{me.username}?start=v_{token}"
+    hint = (
+        "Одноразовая, действует 7 дней. Отправьте клиенту: он нажмёт «Запустить» и получит "
+        + ("/stats." if role == "stats" else "доступ ко всей админке, кроме опасных действий.")
+    )
+    await show(
+        call,
+        screen_text(f"🔗 Ссылка для клиента ({ROLE_LABELS[role]})", hint, f"<code>{url}</code>"),
+        kb([[("🔗 Новая ссылка", f"a:acc:link:{role}")], [("⬅️ Назад", "a:acc")]]),
     )
     await call.answer()
 
 
 @router.callback_query(F.data == "a:acc:add")
-async def cb_add(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ViewerAdd.waiting_value)
+async def cb_add(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     await show(
         call,
         screen_text(
             "➕ Добавить клиента",
+            "Какой доступ выдать?",
+        ),
+        _role_choice_kb("a:acc:add", "a:acc"),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.in_(("a:acc:add:stats", "a:acc:add:admin")))
+async def cb_add_role(call: CallbackQuery, state: FSMContext, deps) -> None:
+    if not await require_owner(call, deps):
+        return
+    role = call.data.rsplit(":", 1)[-1]
+    await state.set_state(ViewerAdd.waiting_value)
+    await state.update_data(role=role)
+    await show(
+        call,
+        screen_text(
+            f"➕ Добавить клиента ({ROLE_LABELS[role]})",
             "Пришлите числовой Telegram ID или перешлите сюда любое сообщение этого человека.",
         ),
         kb([[("⬅️ Отмена", "a:acc")]]),
@@ -90,17 +143,21 @@ async def on_add_value(message: Message, state: FSMContext, deps) -> None:
             reply_markup=kb([[("⬅️ Отмена", "a:acc")]]),
         )
         return
-    await deps.viewers.add(tg_id, name, username)
+    data = await state.get_data()
+    role = data.get("role", "stats")
+    await deps.access.add(tg_id, name, username, role=role)
     await state.clear()
     await access_screen(message, deps)
 
 
 @router.callback_query(F.data.startswith("a:acc:del:"))
-async def cb_delete_ask(call: CallbackQuery) -> None:
+async def cb_delete_ask(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     tg_id = int(call.data.split(":")[-1])
     await show(
         call,
-        screen_text("🗑 Убрать доступ?", "Клиент перестанет получать статистику по команде /stats."),
+        screen_text("🗑 Убрать доступ?", "Клиент потеряет доступ (статистику или админку — по его роли)."),
         kb([[("🗑 Да, убрать", f"a:acc:delok:{tg_id}")], [("⬅️ Отмена", "a:acc")]]),
     )
     await call.answer()
@@ -108,6 +165,8 @@ async def cb_delete_ask(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("a:acc:delok:"))
 async def cb_delete_do(call: CallbackQuery, deps) -> None:
-    await deps.viewers.remove(int(call.data.split(":")[-1]))
+    if not await require_owner(call, deps):
+        return
+    await deps.access.remove(int(call.data.split(":")[-1]))
     await call.answer("Убрал")
     await access_screen(call, deps)

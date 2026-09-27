@@ -120,7 +120,7 @@ async def cb_hello(call: CallbackQuery, deps, state: FSMContext) -> None:
 # --- 2. проверка подписки ---------------------------------------------------------
 
 
-async def subscription_screen(target, deps) -> None:
+async def subscription_screen(target, deps, is_owner: bool) -> None:
     settings = deps.settings
     channel = (await settings.get("channel_id")).strip()
     title = html.escape((await settings.get("channel_title")).strip())
@@ -132,6 +132,14 @@ async def subscription_screen(target, deps) -> None:
         f"🔗 Ссылка: {url or 'нет'}\n"
         f"🔒 Закрытый канал: {('<code>%s</code>' % private) if private else 'не задан'}"
     )
+    rows = []
+    if is_owner:
+        # Смена самого канала — опасное действие (риск сорвать проверку подписки
+        # у всех подписчиков разом), роли admin недоступна; правка текстов — можно.
+        rows.append([("📢 Канал для проверки", "a:set:channel")])
+        rows.append([("🔒 Закрытый канал", "a:set:private")])
+    rows.append([("✏️ Тексты и кнопки", "a:set:texts:sub")])
+    rows.append([("⬅️ Назад", "a:flow")])
     await show(
         target,
         screen_text(
@@ -139,19 +147,12 @@ async def subscription_screen(target, deps) -> None:
             "Материал получают только подписанные. Бот должен быть админом канала.",
             body,
         ),
-        kb(
-            [
-                [("📢 Канал для проверки", "a:set:channel")],
-                [("🔒 Закрытый канал", "a:set:private")],
-                [("✏️ Тексты и кнопки", "a:set:texts:sub")],
-                [("⬅️ Назад", "a:flow")],
-            ]
-        ),
+        kb(rows),
     )
 
 
 @router.callback_query(F.data == "a:flow:sub")
 async def cb_subscription(call: CallbackQuery, deps, state: FSMContext) -> None:
     await state.clear()
-    await subscription_screen(call, deps)
+    await subscription_screen(call, deps, deps.config.is_admin(call.from_user.id))
     await call.answer()

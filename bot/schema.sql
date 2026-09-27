@@ -108,7 +108,8 @@ CREATE TABLE IF NOT EXISTS viewers (
     tg_id    INTEGER PRIMARY KEY,
     name     TEXT,
     username TEXT,
-    added_at INTEGER NOT NULL
+    added_at INTEGER NOT NULL,
+    role     TEXT NOT NULL DEFAULT 'stats'
 );
 
 CREATE TABLE IF NOT EXISTS viewer_invites (
@@ -116,5 +117,6 @@ CREATE TABLE IF NOT EXISTS viewer_invites (
     created_by INTEGER,
     created_at INTEGER NOT NULL,
     used_by    INTEGER,
-    used_at    INTEGER
+    used_at    INTEGER,
+    role       TEXT NOT NULL DEFAULT 'stats'
 );

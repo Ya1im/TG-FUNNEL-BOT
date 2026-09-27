@@ -39,7 +39,22 @@ FALLBACK_ERROR_TEXT = (
 class AdminFilter(BaseFilter):
     async def __call__(self, event: TelegramObject, deps=None) -> bool:
         user = getattr(event, "from_user", None)
-        return bool(user and deps and deps.config.is_admin(user.id))
+        return bool(user and deps and (
+            deps.config.is_admin(user.id) or await deps.access.role(user.id) == "admin"
+        ))
+
+
+async def require_owner(call: CallbackQuery, deps) -> bool:
+    """Пропустить дальше только владельца; роль admin получает вежливый отказ.
+
+    Читает `deps.config.is_admin` заново при каждом вызове — если у роли admin
+    отозвали доступ владелец нажатием 🗑 в «Доступе», следующее же нажатие
+    отклоняется, ничего не кэшируется.
+    """
+    if deps.config.is_admin(call.from_user.id):
+        return True
+    await call.answer("Доступно только владельцу бота", show_alert=True)
+    return False
 
 
 class MediaAdd(StatesGroup):

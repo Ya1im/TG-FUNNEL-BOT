@@ -29,7 +29,7 @@ async def cmd_start(message: Message, command: CommandObject, deps: Deps) -> Non
 async def _redeem_viewer_invite(message: Message, deps: Deps, token: str) -> None:
     """Пригласительная ссылка клиента: даём доступ к /stats. В воронку и статистику человек не попадает."""
     user = message.from_user
-    if not await deps.viewers.redeem(token, user.id, user.full_name, user.username):
+    if not await deps.access.redeem(token, user.id, user.full_name, user.username):
         await message.answer("Ссылка недействительна или уже использована. Попросите новую.")
         return
     try:
@@ -90,7 +90,7 @@ async def cmd_help(message: Message, deps: Deps) -> None:
             "/admin — админка (медиатека, прогрев, рассылки, настройки)\n"
             "/reset — сбросить своё прохождение и пройти воронку заново"
         )
-    elif await deps.viewers.is_viewer(message.from_user.id):
+    elif await deps.access.role(message.from_user.id) is not None:
         await message.answer("Команда: /stats — статистика бота.")
     else:
         await message.answer("Жми /start 🙂")

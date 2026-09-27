@@ -20,7 +20,7 @@ class CanViewStats(BaseFilter):
         user = getattr(event, "from_user", None)
         if not (user and deps):
             return False
-        return deps.config.is_admin(user.id) or await deps.viewers.is_viewer(user.id)
+        return deps.config.is_admin(user.id) or await deps.access.role(user.id) is not None
 
 
 router.message.filter(CanViewStats())

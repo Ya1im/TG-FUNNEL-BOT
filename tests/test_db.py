@@ -57,3 +57,43 @@ async def test_old_database_gets_new_columns_and_keeps_gated_behaviour(tmp_path)
         await db.apply_schema()  # повторный запуск ничего не ломает
     finally:
         await db.close()
+
+
+async def test_old_viewers_table_gets_role_column(tmp_path):
+    import sqlite3
+
+    from bot.db import Database
+
+    path = tmp_path / "old_viewers.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE viewers (
+            tg_id    INTEGER PRIMARY KEY,
+            name     TEXT,
+            username TEXT,
+            added_at INTEGER NOT NULL
+        );
+        INSERT INTO viewers(tg_id, name, username, added_at) VALUES (5, 'Анна', 'anna', 0);
+        CREATE TABLE viewer_invites (
+            token      TEXT PRIMARY KEY,
+            created_by INTEGER,
+            created_at INTEGER NOT NULL,
+            used_by    INTEGER,
+            used_at    INTEGER
+        );
+        INSERT INTO viewer_invites(token, created_by, created_at) VALUES ('tok', 99, 0);
+        """
+    )
+    con.commit()
+    con.close()
+
+    db = await Database(path).connect()
+    try:
+        row = await db.fetchone("SELECT role FROM viewers WHERE tg_id = 5")
+        assert row["role"] == "stats"
+        invite = await db.fetchone("SELECT role FROM viewer_invites WHERE token = 'tok'")
+        assert invite["role"] == "stats"
+        await db.apply_schema()  # повторный запуск ничего не ломает
+    finally:
+        await db.close()

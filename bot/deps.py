@@ -6,6 +6,7 @@ from typing import Any
 
 from bot.config import Config
 from bot.db import Database
+from bot.repo.access import AccessRepo
 from bot.repo.broadcasts import BroadcastsRepo
 from bot.repo.funnel import FunnelRepo
 from bot.repo.material import MaterialRepo
@@ -13,7 +14,6 @@ from bot.repo.media import MediaRepo
 from bot.repo.repeat_start import RepeatStartRepo
 from bot.repo.settings import SettingsRepo
 from bot.repo.users import UsersRepo
-from bot.repo.viewers import ViewersRepo
 from bot.sender import RateLimiter
 from bot.subscription import ChannelGate
 
@@ -31,7 +31,7 @@ class Deps:
     limiter: RateLimiter
     repeat_start: RepeatStartRepo = None
     broadcasts: Any = None
-    viewers: ViewersRepo = None
+    access: AccessRepo = None
     engine: Any = None
     scheduler: Any = None
 
@@ -51,5 +51,5 @@ class Deps:
             limiter=RateLimiter(config.messages_per_second),
             repeat_start=RepeatStartRepo(db),
             broadcasts=BroadcastsRepo(db),
-            viewers=ViewersRepo(db),
+            access=AccessRepo(db),
         )

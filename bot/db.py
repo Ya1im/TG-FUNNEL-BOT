@@ -63,6 +63,14 @@ class Database:
             await self.conn.execute(
                 "ALTER TABLE broadcasts ADD COLUMN sub_mode TEXT NOT NULL DEFAULT 'off'"
             )
+        if not await self._has_column("viewers", "role"):
+            await self.conn.execute(
+                "ALTER TABLE viewers ADD COLUMN role TEXT NOT NULL DEFAULT 'stats'"
+            )
+        if not await self._has_column("viewer_invites", "role"):
+            await self.conn.execute(
+                "ALTER TABLE viewer_invites ADD COLUMN role TEXT NOT NULL DEFAULT 'stats'"
+            )
 
     async def close(self) -> None:
         if self._conn is not None:

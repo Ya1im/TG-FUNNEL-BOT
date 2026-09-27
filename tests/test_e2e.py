@@ -887,9 +887,9 @@ def _callbacks(markup):
     return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
 
 
-async def _open(dp, bot, session, data):
+async def _open(dp, bot, session, data, user_id: int = ADMIN_ID):
     session.requests.clear()
-    await feed(dp, bot, callback=make_callback(data, user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback(data, user_id=user_id))
     return _screen(session)
 
 
@@ -1016,7 +1016,7 @@ VIEWER_ID = 555
 async def test_viewer_gets_stats_by_command_and_stranger_gets_nothing(stack):
     dp, bot, session, deps = stack
     await deps.users.upsert(1, "u1", "Вася")
-    await deps.viewers.add(VIEWER_ID, "Клиент", "client")
+    await deps.access.add(VIEWER_ID, "Клиент", "client")
 
     session.requests.clear()
     await feed(dp, bot, message=make_message("/stats", user_id=VIEWER_ID))
@@ -1030,7 +1030,7 @@ async def test_viewer_gets_stats_by_command_and_stranger_gets_nothing(stack):
 
 async def test_viewer_cannot_open_admin_panel(stack):
     dp, bot, session, deps = stack
-    await deps.viewers.add(VIEWER_ID, "Клиент", None)
+    await deps.access.add(VIEWER_ID, "Клиент", None)
     session.requests.clear()
     await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
     assert "SendMessage" not in session.names()
@@ -1048,37 +1048,244 @@ async def test_admin_stats_command_works_too(stack):
 
 async def test_admin_invites_viewer_by_link_and_link_works_once(stack):
     dp, bot, session, deps = stack
-    text, markup = await _open(dp, bot, session, "a:acc:link")
+    text, markup = await _open(dp, bot, session, "a:acc:link:stats")
     assert "?start=v_" in text
     token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
 
     session.requests.clear()
     await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=VIEWER_ID))
-    assert await deps.viewers.is_viewer(VIEWER_ID) is True
+    assert await deps.access.role(VIEWER_ID) is not None
     assert await deps.users.get(VIEWER_ID) is None  # клиент не попал в воронку и статистику
     assert "/stats" in session.calls("SendMessage")[0].text
 
     session.requests.clear()
     await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=556))
-    assert await deps.viewers.is_viewer(556) is False
+    assert await deps.access.role(556) is None
     assert await deps.users.get(556) is None
 
 
 async def test_admin_adds_and_removes_viewer_by_id(stack):
     dp, bot, session, deps = stack
-    await feed(dp, bot, callback=make_callback("a:acc:add", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:acc:add:stats", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("777", user_id=ADMIN_ID, message_id=70))
-    assert await deps.viewers.is_viewer(777) is True
+    assert await deps.access.role(777) == "stats"
 
     text, markup = await _open(dp, bot, session, "a:acc")
     assert "777" in text
     assert "a:acc:del:777" in _callbacks(markup)
     await _open(dp, bot, session, "a:acc:del:777")
     text, _ = await _open(dp, bot, session, "a:acc:delok:777")
-    assert await deps.viewers.is_viewer(777) is False
+    assert await deps.access.role(777) is None
 
 
 async def test_access_screen_cancel_returns_to_access(stack):
     dp, bot, session, deps = stack
     _, markup = await _open(dp, bot, session, "a:acc:add")
     assert _callbacks(markup)[-1] == "a:acc"
+
+
+async def test_admin_role_can_open_admin_panel_stats_role_cannot(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "EditMessageText" in session.names() or "SendMessage" in session.names()
+
+    await deps.access.add(600, "Просто зритель", None, role="stats")
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=600))
+    # Стороннее сообщение "/admin" от неадмина попадает под общий фолбэк-обработчик
+    # (bot/handlers/user.py::fallback), который тихо удаляет любые нераспознанные
+    # сообщения — это никак не даёт роли "stats" открыть админку.
+    assert "SendMessage" not in session.names() and "EditMessageText" not in session.names()
+
+
+async def test_owner_picks_role_when_creating_invite(stack):
+    dp, bot, session, deps = stack
+    text, markup = await _open(dp, bot, session, "a:acc:link")
+    assert "a:acc:link:stats" in _callbacks(markup) and "a:acc:link:admin" in _callbacks(markup)
+
+    text, _ = await _open(dp, bot, session, "a:acc:link:admin")
+    token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
+    await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=701))
+    assert await deps.access.role(701) == "admin"
+
+
+# --- владельческие экраны и действия недоступны роли admin -------------------
+
+
+async def test_admin_role_is_rejected_directly_by_access_router(stack):
+    """Task 2 review: роль admin не должна суметь сама себя повысить через a:acc*."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:acc:link:admin", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    answer = session.calls("AnswerCallbackQuery")[0]
+    assert answer.show_alert is True
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:acc", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
+
+
+async def test_access_link_add_and_delete_rejected_for_role_admin(stack):
+    """Task 3 review: guard'ы в каждом хендлере a:acc:* (не только в a:acc и a:acc:link:*),
+    включая удаление реального клиента по его tg_id."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    await deps.access.add(888, "Другой клиент", None, role="stats")
+
+    for data in ("a:acc:link", "a:acc:add", "a:acc:add:stats", "a:acc:add:admin"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+
+    for data in ("a:acc:del:888", "a:acc:delok:888"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+    assert await deps.access.role(888) == "stats"  # реальный клиент не удалился
+
+
+async def test_content_admin_does_not_see_or_reach_owner_actions(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    await deps.users.upsert(42, "u42", "Юзер")  # чтобы было что "обнулить", если бы guard не сработал
+
+    text, markup = await _open(dp, bot, session, "a:set", user_id=VIEWER_ID)
+    assert "a:acc" not in _callbacks(markup) and "a:set:report" not in _callbacks(markup)
+
+    text, markup = await _open(dp, bot, session, "a:flow:sub", user_id=VIEWER_ID)
+    assert "a:set:channel" not in _callbacks(markup) and "a:set:private" not in _callbacks(markup)
+    assert any(cb.startswith("a:set:texts:sub") for cb in _callbacks(markup))
+
+    text, markup = await _open(dp, bot, session, "a:stat", user_id=VIEWER_ID)
+    assert "a:stat:reset" not in _callbacks(markup) and "a:stat:chat" not in _callbacks(markup)
+
+    total_before = (await deps.users.stats())["total"]
+    assert total_before >= 1  # seed действительно есть, иначе проверка ниже бессмысленна
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:reset:go", user_id=VIEWER_ID))
+    # Настоящий сброс удалил бы всех пользователей и отредактировал сообщение —
+    # ничего из этого не должно случиться под ролью admin.
+    assert (await deps.users.stats())["total"] == total_before
+    assert "EditMessageText" not in session.names()
+    answer = session.calls("AnswerCallbackQuery")[0]
+    assert answer.show_alert is True
+
+
+async def test_content_admin_cannot_reach_channel_or_report_chat_handlers_directly(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    for data in ("a:set:channel", "a:set:private", "a:set:force", "a:set:report", "a:stat:chat"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+
+
+async def test_content_admin_cannot_force_save_pending_channel(stack):
+    """a:set:force сохраняет канал в обход проверки прав Telegram. Пустой probe без
+    предварительно выставленного pending_id ничего не докажет (хендлер и так молча
+    отвечает "Нечего сохранять") — поэтому сперва выставляем pending_id так, как это
+    сделал бы владелец через a:set:channel -> on_channel_value, когда бот не админ
+    канала, и только потом дёргаем a:set:force под ролью admin."""
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    key = StorageKey(bot_id=bot.id, chat_id=VIEWER_ID, user_id=VIEWER_ID)
+    ctx = FSMContext(storage=dp.storage, key=key)
+    await ctx.update_data(
+        field="channel",
+        pending_id="-100123456",
+        pending_title="Тестовый канал",
+        pending_url="https://t.me/testchan",
+    )
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set:force", user_id=VIEWER_ID))
+    assert (await deps.settings.get("channel_id")).strip() == ""
+    assert (await deps.settings.get("channel_title")).strip() == ""
+    assert (await deps.settings.get("channel_url")).strip() == ""
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
+
+
+async def test_content_admin_cannot_open_stats_reset_confirm_screen(stack):
+    """a:stat:reset — сам экран подтверждения обнуления, не только a:stat:reset:go."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:reset", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
+
+
+async def test_content_admin_does_not_see_delete_button_on_broadcast_card(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=VIEWER_ID))
+    await feed(dp, bot, message=make_message("Привет всем!", user_id=VIEWER_ID, message_id=90))
+    await feed(dp, bot, callback=make_callback("a:bc:done", user_id=VIEWER_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:tosend", user_id=VIEWER_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:bc:seg:all", user_id=VIEWER_ID))
+    text, markup = _screen(session)
+    cbs = _callbacks(markup)
+    assert not any(cb.startswith("a:bc:del:") for cb in cbs)
+    broadcast_id = (await deps.broadcasts.recent(5))[0]["id"]
+
+    for data in (f"a:bc:del:{broadcast_id}", f"a:bc:delok:{broadcast_id}"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+    assert await deps.broadcasts.get(broadcast_id) is not None  # не удалилась
+
+
+async def test_owner_still_sees_all_owner_buttons(stack):
+    """Регрессия: у владельца (ADMIN_ID) все владельческие кнопки/действия остаются на месте."""
+    dp, bot, session, deps = stack
+    _, markup = await _open(dp, bot, session, "a:set")
+    assert "a:acc" in _callbacks(markup) and "a:set:report" in _callbacks(markup)
+
+    _, markup = await _open(dp, bot, session, "a:flow:sub")
+    assert "a:set:channel" in _callbacks(markup) and "a:set:private" in _callbacks(markup)
+
+    _, markup = await _open(dp, bot, session, "a:stat")
+    assert "a:stat:reset" in _callbacks(markup) and "a:stat:chat" in _callbacks(markup)
+
+
+async def test_admin_role_revoked_access_denied_on_very_next_action(stack):
+    """Review Focus: отзыв доступа (deps.access.remove) должен блокировать САМОЕ
+    СЛЕДУЮЩЕЕ действие клиента — ни /admin, ни a:-колбэки не должны кэшировать роль
+    где-либо между хендлерами."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "SendMessage" in session.names() or "EditMessageText" in session.names()
+
+    await deps.access.remove(VIEWER_ID)
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "SendMessage" not in session.names() and "EditMessageText" not in session.names()
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert await deps.access.role(VIEWER_ID) is None
