@@ -21,7 +21,7 @@ def _title(row) -> str:
 
 
 async def access_screen(target, deps) -> None:
-    viewers = await deps.viewers.list()
+    viewers = await deps.access.list()
     lines = [f"{i}. {_title(v)} · <code>{v['tg_id']}</code>" for i, v in enumerate(viewers, start=1)]
     rows = [[("🔗 Пригласительная ссылка", "a:acc:link")], [("➕ Добавить по ID", "a:acc:add")]]
     for v in viewers:
@@ -40,7 +40,7 @@ async def cb_access(call: CallbackQuery, deps, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "a:acc:link")
 async def cb_link(call: CallbackQuery, deps) -> None:
-    token = await deps.viewers.create_invite(created_by=call.from_user.id)
+    token = await deps.access.create_invite(created_by=call.from_user.id)
     me = await call.bot.me()
     url = f"https://t.me/{me.username}?start=v_{token}"
     await show(
@@ -90,7 +90,7 @@ async def on_add_value(message: Message, state: FSMContext, deps) -> None:
             reply_markup=kb([[("⬅️ Отмена", "a:acc")]]),
         )
         return
-    await deps.viewers.add(tg_id, name, username)
+    await deps.access.add(tg_id, name, username)
     await state.clear()
     await access_screen(message, deps)
 
@@ -108,6 +108,6 @@ async def cb_delete_ask(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("a:acc:delok:"))
 async def cb_delete_do(call: CallbackQuery, deps) -> None:
-    await deps.viewers.remove(int(call.data.split(":")[-1]))
+    await deps.access.remove(int(call.data.split(":")[-1]))
     await call.answer("Убрал")
     await access_screen(call, deps)

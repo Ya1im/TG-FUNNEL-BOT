@@ -1,40 +1,53 @@
-"""Доступ «только статистика»: репозиторий зрителей, приглашения, текст отчёта."""
+"""Доступ «только статистика» / «admin»: репозиторий доступа, приглашения, текст отчёта."""
 from types import SimpleNamespace
 
+from bot.repo.access import AccessRepo
 from bot.repo.broadcasts import BroadcastsRepo
 from bot.repo.funnel import FunnelRepo
 from bot.repo.users import UsersRepo
-from bot.repo.viewers import ViewersRepo
 from bot.stats_report import build_report
 
 
 async def test_add_list_remove_viewer(db):
-    repo = ViewersRepo(db)
-    assert await repo.is_viewer(5) is False
+    repo = AccessRepo(db)
+    assert await repo.role(5) is None
     await repo.add(5, "Анна", "anna")
     await repo.add(5, "Анна Новая", "anna")  # повторное добавление обновляет, а не дублирует
-    assert await repo.is_viewer(5) is True
+    assert await repo.role(5) == "stats"
     rows = await repo.list()
     assert [(r["tg_id"], r["name"]) for r in rows] == [(5, "Анна Новая")]
     await repo.remove(5)
-    assert await repo.is_viewer(5) is False
+    assert await repo.role(5) is None
 
 
 async def test_invite_is_single_use_and_makes_viewer(db):
-    repo = ViewersRepo(db)
+    repo = AccessRepo(db)
     token = await repo.create_invite(created_by=99)
     assert await repo.redeem(token, 7, "Борис", "boris") is True
-    assert await repo.is_viewer(7) is True
+    assert await repo.role(7) == "stats"
     assert await repo.redeem(token, 8, "Вика", None) is False  # уже использована
-    assert await repo.is_viewer(8) is False
+    assert await repo.role(8) is None
 
 
 async def test_invite_expires_and_garbage_is_rejected(db):
-    repo = ViewersRepo(db)
+    repo = AccessRepo(db)
     token = await repo.create_invite(created_by=99, now=1000)
     assert await repo.redeem(token, 7, "Борис", None, now=1000 + 8 * 86400) is False
     assert await repo.redeem("nonsense", 7, "Борис", None) is False
-    assert await repo.is_viewer(7) is False
+    assert await repo.role(7) is None
+
+
+async def test_add_and_invite_default_to_stats_role(db):
+    repo = AccessRepo(db)
+    await repo.add(5)
+    assert await repo.role(5) == "stats"
+
+
+async def test_invite_can_carry_admin_role(db):
+    repo = AccessRepo(db)
+    token = await repo.create_invite(created_by=99, role="admin")
+    assert await repo.redeem(token, 7, "Борис", None) is True
+    assert await repo.role(7) == "admin"
 
 
 def _deps(db):

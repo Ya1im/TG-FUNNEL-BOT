@@ -1016,7 +1016,7 @@ VIEWER_ID = 555
 async def test_viewer_gets_stats_by_command_and_stranger_gets_nothing(stack):
     dp, bot, session, deps = stack
     await deps.users.upsert(1, "u1", "Вася")
-    await deps.viewers.add(VIEWER_ID, "Клиент", "client")
+    await deps.access.add(VIEWER_ID, "Клиент", "client")
 
     session.requests.clear()
     await feed(dp, bot, message=make_message("/stats", user_id=VIEWER_ID))
@@ -1030,7 +1030,7 @@ async def test_viewer_gets_stats_by_command_and_stranger_gets_nothing(stack):
 
 async def test_viewer_cannot_open_admin_panel(stack):
     dp, bot, session, deps = stack
-    await deps.viewers.add(VIEWER_ID, "Клиент", None)
+    await deps.access.add(VIEWER_ID, "Клиент", None)
     session.requests.clear()
     await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
     assert "SendMessage" not in session.names()
@@ -1054,13 +1054,13 @@ async def test_admin_invites_viewer_by_link_and_link_works_once(stack):
 
     session.requests.clear()
     await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=VIEWER_ID))
-    assert await deps.viewers.is_viewer(VIEWER_ID) is True
+    assert await deps.access.role(VIEWER_ID) is not None
     assert await deps.users.get(VIEWER_ID) is None  # клиент не попал в воронку и статистику
     assert "/stats" in session.calls("SendMessage")[0].text
 
     session.requests.clear()
     await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=556))
-    assert await deps.viewers.is_viewer(556) is False
+    assert await deps.access.role(556) is None
     assert await deps.users.get(556) is None
 
 
@@ -1068,14 +1068,14 @@ async def test_admin_adds_and_removes_viewer_by_id(stack):
     dp, bot, session, deps = stack
     await feed(dp, bot, callback=make_callback("a:acc:add", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("777", user_id=ADMIN_ID, message_id=70))
-    assert await deps.viewers.is_viewer(777) is True
+    assert await deps.access.role(777) is not None
 
     text, markup = await _open(dp, bot, session, "a:acc")
     assert "777" in text
     assert "a:acc:del:777" in _callbacks(markup)
     await _open(dp, bot, session, "a:acc:del:777")
     text, _ = await _open(dp, bot, session, "a:acc:delok:777")
-    assert await deps.viewers.is_viewer(777) is False
+    assert await deps.access.role(777) is None
 
 
 async def test_access_screen_cancel_returns_to_access(stack):
