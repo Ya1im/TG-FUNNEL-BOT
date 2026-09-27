@@ -62,6 +62,7 @@ class FunnelRepo:
 
     async def update_step(self, step_id: int, **fields) -> None:
         allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
+        before = await self.get_step(step_id) if "enabled" in fields else None
         sets, params = [], []
         for key, value in fields.items():
             if key in allowed:
@@ -71,6 +72,8 @@ class FunnelRepo:
             return
         params.append(step_id)
         await self.db.execute(f"UPDATE funnel_steps SET {', '.join(sets)} WHERE id = ?", params)
+        if before is not None and int(before["enabled"]) == 0 and int(fields["enabled"]) == 1:
+            await self.backfill_step(step_id, before["position"], before["delay_seconds"])
 
     async def get_step(self, step_id: int):
         return await self.db.fetchone("SELECT * FROM funnel_steps WHERE id = ?", (step_id,))

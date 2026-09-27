@@ -236,3 +236,54 @@ async def test_backfill_step_treats_skipped_later_step_as_not_ahead(db):
 
     got = await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ? AND user_id = 1", (mid_id,))
     assert got != []  # skipped — не «дальше», шаг всё равно ставится
+
+
+async def test_enabling_disabled_step_triggers_backfill(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
+    step_id = await funnel.add_step(delay_seconds=60, text="Шаг")
+    await funnel.update_step(step_id, enabled=0)
+    await db.execute("DELETE FROM user_steps WHERE step_id = ?", (step_id,))  # имитируем «выключен ещё до всех»
+
+    await funnel.update_step(step_id, enabled=1)
+
+    rows = await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ? AND user_id = 1", (step_id,))
+    assert rows != []
+
+
+async def test_disabling_step_does_not_backfill(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
+    step_id = await funnel.add_step(delay_seconds=60, text="Шаг")
+    await db.execute("DELETE FROM user_steps WHERE step_id = ?", (step_id,))
+
+    await funnel.update_step(step_id, enabled=0)
+
+    assert await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)) == []
+
+
+async def test_editing_other_fields_does_not_backfill(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
+    step_id = await funnel.add_step(delay_seconds=60, text="Шаг")
+    await db.execute("DELETE FROM user_steps WHERE step_id = ?", (step_id,))
+
+    await funnel.update_step(step_id, text="Другой текст", delay_seconds=120)
+
+    assert await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)) == []
+
+
+async def test_reenabling_already_enabled_step_is_noop_for_backfill(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1)
+    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
+    step_id = await funnel.add_step(delay_seconds=60, text="Шаг")
+    before = len(await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)))
+
+    await funnel.update_step(step_id, enabled=1)  # уже включён
+
+    after = len(await db.fetchall("SELECT 1 FROM user_steps WHERE step_id = ?", (step_id,)))
+    assert after == before
