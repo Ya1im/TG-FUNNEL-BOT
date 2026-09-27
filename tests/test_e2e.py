@@ -893,11 +893,11 @@ async def _open(dp, bot, session, data, user_id: int = ADMIN_ID):
     return _screen(session)
 
 
-async def test_admin_main_menu_has_four_sections(stack):
+async def test_admin_main_menu_has_five_sections(stack):
     dp, bot, session, deps = stack
     await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
     _, markup = _screen(session)
-    assert _callbacks(markup) == ["a:flow", "a:bc", "a:stat", "a:set"]
+    assert _callbacks(markup) == ["a:flow", "a:bc", "a:stat", "a:set", "a:guide"]
 
 
 async def test_main_menu_shows_what_is_left_to_configure(stack):
@@ -1289,3 +1289,42 @@ async def test_admin_role_revoked_access_denied_on_very_next_action(stack):
     await feed(dp, bot, callback=make_callback("a:set", user_id=VIEWER_ID))
     assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
     assert await deps.access.role(VIEWER_ID) is None
+
+
+async def test_guide_button_sends_document_to_owner(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:guide", user_id=ADMIN_ID))
+    assert "SendDocument" in session.names()
+
+
+async def test_guide_button_sends_document_to_admin_role_client(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:guide", user_id=VIEWER_ID))
+    assert "SendDocument" in session.names()
+
+
+async def test_guide_button_missing_file_shows_alert_not_crash(stack, monkeypatch):
+    dp, bot, session, deps = stack
+    import bot.handlers.admin as admin_pkg
+    monkeypatch.setattr(admin_pkg, "GUIDE_PDF_PATH", admin_pkg.GUIDE_PDF_PATH.with_name("missing.pdf"))
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:guide", user_id=ADMIN_ID))
+    assert "SendDocument" not in session.names()
+    alerts = [r for r in session.calls("AnswerCallbackQuery") if r.show_alert]
+    assert alerts
+
+
+async def test_guide_button_rejected_for_stats_role_client(stack):
+    """Review Focus: роль stats не проходит AdminFilter — прямой вызов a:guide не должен
+    сработать, а не просто «наверное, сработает, раз кнопка спрятана»."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="stats")
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:guide", user_id=VIEWER_ID))
+    assert "SendDocument" not in session.names()
