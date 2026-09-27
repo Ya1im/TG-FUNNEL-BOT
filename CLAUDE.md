@@ -131,6 +131,15 @@ GitHub (Settings репозитория → Deploy keys, ключ скрипт �
    превью/куском пользовательского текста — используй `preview()`/`safe_excerpt()` из common.py,
    не режь HTML-строки руками.**
 
+11. **Контейнер падал целиком при кратковременной недоступности зеркала Telegram API**
+   (28.09.2026) — `bot.__main__.set_commands()` вызывал `bot.set_my_commands(...,
+   scope=BotCommandScopeDefault())` без `try/except`; один таймаут при заходе через
+   `TELEGRAM_API_BASE`-зеркало (см. грабли №2) на самом старте ронял весь `main()`
+   необработанным `TelegramNetworkError`, ещё до начала polling. `restart: unless-stopped`
+   сам поднимал контейнер заново, но это лишняя точка отказа. Починено: вызов обёрнут в
+   `try/except` с `log.warning(...)`, как уже было сделано для команд по чатам админов
+   строкой ниже. См. `tests/test_main.py::test_set_commands_does_not_crash_on_network_error`.
+
 ## Текущее состояние (15.09.2026)
 
 Работает на проде, сценарий проверен вживую: кружок → меню → проверка подписки → материал →

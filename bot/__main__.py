@@ -45,9 +45,14 @@ def build_session(config: Config) -> AiohttpSession | None:
 
 
 async def set_commands(bot: Bot, config: Config) -> None:
-    await bot.set_my_commands(
-        [BotCommand(command="start", description="Начать")], scope=BotCommandScopeDefault()
-    )
+    # Сбой сети (например, недоступное на секунду зеркало Telegram API) здесь не должен
+    # ронять весь процесс — список команд не критичен для работы бота, в отличие от polling.
+    try:
+        await bot.set_my_commands(
+            [BotCommand(command="start", description="Начать")], scope=BotCommandScopeDefault()
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("Не смог выставить команды по умолчанию — попробую в следующий раз")
     admin_commands = [
         BotCommand(command="start", description="Пройти сценарий как пользователь"),
         BotCommand(command="admin", description="Админка"),
