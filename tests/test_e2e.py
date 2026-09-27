@@ -1048,7 +1048,7 @@ async def test_admin_stats_command_works_too(stack):
 
 async def test_admin_invites_viewer_by_link_and_link_works_once(stack):
     dp, bot, session, deps = stack
-    text, markup = await _open(dp, bot, session, "a:acc:link")
+    text, markup = await _open(dp, bot, session, "a:acc:link:stats")
     assert "?start=v_" in text
     token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
 
@@ -1066,9 +1066,9 @@ async def test_admin_invites_viewer_by_link_and_link_works_once(stack):
 
 async def test_admin_adds_and_removes_viewer_by_id(stack):
     dp, bot, session, deps = stack
-    await feed(dp, bot, callback=make_callback("a:acc:add", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("a:acc:add:stats", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("777", user_id=ADMIN_ID, message_id=70))
-    assert await deps.access.role(777) is not None
+    assert await deps.access.role(777) == "stats"
 
     text, markup = await _open(dp, bot, session, "a:acc")
     assert "777" in text
@@ -1082,3 +1082,30 @@ async def test_access_screen_cancel_returns_to_access(stack):
     dp, bot, session, deps = stack
     _, markup = await _open(dp, bot, session, "a:acc:add")
     assert _callbacks(markup)[-1] == "a:acc"
+
+
+async def test_admin_role_can_open_admin_panel_stats_role_cannot(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=VIEWER_ID))
+    assert "EditMessageText" in session.names() or "SendMessage" in session.names()
+
+    await deps.access.add(600, "Просто зритель", None, role="stats")
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/admin", user_id=600))
+    # Стороннее сообщение "/admin" от неадмина попадает под общий фолбэк-обработчик
+    # (bot/handlers/user.py::fallback), который тихо удаляет любые нераспознанные
+    # сообщения — это никак не даёт роли "stats" открыть админку.
+    assert "SendMessage" not in session.names() and "EditMessageText" not in session.names()
+
+
+async def test_owner_picks_role_when_creating_invite(stack):
+    dp, bot, session, deps = stack
+    text, markup = await _open(dp, bot, session, "a:acc:link")
+    assert "a:acc:link:stats" in _callbacks(markup) and "a:acc:link:admin" in _callbacks(markup)
+
+    text, _ = await _open(dp, bot, session, "a:acc:link:admin")
+    token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
+    await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=701))
+    assert await deps.access.role(701) == "admin"

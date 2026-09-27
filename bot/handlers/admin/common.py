@@ -39,7 +39,9 @@ FALLBACK_ERROR_TEXT = (
 class AdminFilter(BaseFilter):
     async def __call__(self, event: TelegramObject, deps=None) -> bool:
         user = getattr(event, "from_user", None)
-        return bool(user and deps and deps.config.is_admin(user.id))
+        return bool(user and deps and (
+            deps.config.is_admin(user.id) or await deps.access.role(user.id) == "admin"
+        ))
 
 
 class MediaAdd(StatesGroup):
