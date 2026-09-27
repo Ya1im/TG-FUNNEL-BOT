@@ -7,13 +7,13 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
-from bot.handlers.admin.common import ReportChatSet, kb, show
+from bot.handlers.admin.common import ReportChatSet, kb, require_owner, show
 from bot.stats_export import export_path, make_export
 
 router = Router(name="admin-stats")
 
 
-async def stats_screen(target, deps) -> None:
+async def stats_screen(target, deps, is_owner: bool) -> None:
     stats = await deps.users.stats()
     sources = await deps.users.sources()
     pending = await deps.funnel.pending_count()
@@ -33,20 +33,17 @@ async def stats_screen(target, deps) -> None:
         f"📑 Таблица пересобирается каждые {interval} мин.\n"
         f"📤 Чат для пересылки: <code>{report_chat}</code>"
     )
-    await show(
-        target,
-        text,
-        kb(
-            [
-                [("📥 Скачать таблицу", "a:stat:file")],
-                [("📤 Переслать эксперту", "a:stat:send")],
-                [("✏️ Чат для пересылки", "a:stat:chat")],
-                [("🧹 Обнулить статистику", "a:stat:reset")],
-                [("🔄 Обновить", "a:stat")],
-                [("⬅️ Назад", "a:menu")],
-            ]
-        ),
-    )
+    rows = [
+        [("📥 Скачать таблицу", "a:stat:file")],
+        [("📤 Переслать эксперту", "a:stat:send")],
+    ]
+    if is_owner:
+        # Чат для пересылки и обнуление статистики — владельческие/опасные действия.
+        rows.append([("✏️ Чат для пересылки", "a:stat:chat")])
+        rows.append([("🧹 Обнулить статистику", "a:stat:reset")])
+    rows.append([("🔄 Обновить", "a:stat")])
+    rows.append([("⬅️ Назад", "a:menu")])
+    await show(target, text, kb(rows))
 
 
 async def _ensure_file(deps) -> Path:
@@ -59,7 +56,7 @@ async def _ensure_file(deps) -> Path:
 
 @router.callback_query(F.data == "a:stat")
 async def cb_stats(call: CallbackQuery, deps) -> None:
-    await stats_screen(call, deps)
+    await stats_screen(call, deps, deps.config.is_admin(call.from_user.id))
     await call.answer()
 
 
@@ -98,6 +95,8 @@ async def cb_stats_send(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data.in_({"a:stat:chat", "a:set:report"}))
 async def cb_stats_chat(call: CallbackQuery, state: FSMContext, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     back = "a:set" if call.data == "a:set:report" else "a:stat"
     await state.set_state(ReportChatSet.waiting_value)
     await state.update_data(back=back)
@@ -121,12 +120,13 @@ async def _after_report_chat(message, state: FSMContext, deps) -> None:
     """Вернуть админа туда, откуда он пришёл: в настройки или в статистику."""
     back = (await state.get_data()).get("back", "a:stat")
     await state.clear()
+    is_owner = deps.config.is_admin(message.from_user.id)
     if back == "a:set":
         from bot.handlers.admin.settings import settings_screen
 
-        await settings_screen(message, deps)
+        await settings_screen(message, deps, is_owner)
     else:
-        await stats_screen(message, deps)
+        await stats_screen(message, deps, is_owner)
 
 
 @router.message(ReportChatSet.waiting_value)
@@ -165,6 +165,8 @@ async def on_report_chat_value(message: Message, state: FSMContext, deps) -> Non
 
 @router.callback_query(F.data == "a:stat:reset")
 async def cb_stats_reset_confirm(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     text = (
         "🧹 <b>Обнулить статистику</b>\n\n"
         "Удалит всех пользователей, очередь прогрева и историю рассылок.\n"
@@ -183,6 +185,8 @@ async def cb_stats_reset_confirm(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data == "a:stat:reset:go")
 async def cb_stats_reset_go(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     await deps.users.reset_all_stats()
     await call.answer("Статистика обнулена", show_alert=True)
-    await stats_screen(call, deps)
+    await stats_screen(call, deps, deps.config.is_admin(call.from_user.id))

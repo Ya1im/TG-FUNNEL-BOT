@@ -887,9 +887,9 @@ def _callbacks(markup):
     return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
 
 
-async def _open(dp, bot, session, data):
+async def _open(dp, bot, session, data, user_id: int = ADMIN_ID):
     session.requests.clear()
-    await feed(dp, bot, callback=make_callback(data, user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback(data, user_id=user_id))
     return _screen(session)
 
 
@@ -1109,3 +1109,91 @@ async def test_owner_picks_role_when_creating_invite(stack):
     token = text.split("?start=v_")[1].split("<")[0].split()[0].strip()
     await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=701))
     assert await deps.access.role(701) == "admin"
+
+
+# --- владельческие экраны и действия недоступны роли admin -------------------
+
+
+async def test_admin_role_is_rejected_directly_by_access_router(stack):
+    """Task 2 review: роль admin не должна суметь сама себя повысить через a:acc*."""
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:acc:link:admin", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    answer = session.calls("AnswerCallbackQuery")[0]
+    assert answer.show_alert is True
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:acc", user_id=VIEWER_ID))
+    assert "EditMessageText" not in session.names() and "SendMessage" not in session.names()
+    assert session.calls("AnswerCallbackQuery")[0].show_alert is True
+
+
+async def test_content_admin_does_not_see_or_reach_owner_actions(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    text, markup = await _open(dp, bot, session, "a:set", user_id=VIEWER_ID)
+    assert "a:acc" not in _callbacks(markup) and "a:set:report" not in _callbacks(markup)
+
+    text, markup = await _open(dp, bot, session, "a:flow:sub", user_id=VIEWER_ID)
+    assert "a:set:channel" not in _callbacks(markup) and "a:set:private" not in _callbacks(markup)
+    assert any(cb.startswith("a:set:texts:sub") for cb in _callbacks(markup))
+
+    text, markup = await _open(dp, bot, session, "a:stat", user_id=VIEWER_ID)
+    assert "a:stat:reset" not in _callbacks(markup) and "a:stat:chat" not in _callbacks(markup)
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:reset:go", user_id=VIEWER_ID))
+    assert (await deps.users.stats())["total"] >= 0  # ничего не обнулилось
+    answer = session.calls("AnswerCallbackQuery")[0]
+    assert answer.show_alert is True
+
+
+async def test_content_admin_cannot_reach_channel_or_report_chat_handlers_directly(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    for data in ("a:set:channel", "a:set:private", "a:set:force", "a:set:report", "a:stat:chat"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+
+
+async def test_content_admin_does_not_see_delete_button_on_broadcast_card(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(VIEWER_ID, "Клиент", None, role="admin")
+
+    await feed(dp, bot, callback=make_callback("a:bc:new", user_id=VIEWER_ID))
+    await feed(dp, bot, message=make_message("Привет всем!", user_id=VIEWER_ID, message_id=90))
+    await feed(dp, bot, callback=make_callback("a:bc:done", user_id=VIEWER_ID))
+    await feed(dp, bot, callback=make_callback("a:bc:tosend", user_id=VIEWER_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:bc:seg:all", user_id=VIEWER_ID))
+    text, markup = _screen(session)
+    cbs = _callbacks(markup)
+    assert not any(cb.startswith("a:bc:del:") for cb in cbs)
+    broadcast_id = (await deps.broadcasts.recent(5))[0]["id"]
+
+    for data in (f"a:bc:del:{broadcast_id}", f"a:bc:delok:{broadcast_id}"):
+        session.requests.clear()
+        await feed(dp, bot, callback=make_callback(data, user_id=VIEWER_ID))
+        assert "EditMessageText" not in session.names() and "SendMessage" not in session.names(), data
+        assert session.calls("AnswerCallbackQuery")[0].show_alert is True, data
+    assert await deps.broadcasts.get(broadcast_id) is not None  # не удалилась
+
+
+async def test_owner_still_sees_all_owner_buttons(stack):
+    """Регрессия: у владельца (ADMIN_ID) все владельческие кнопки/действия остаются на месте."""
+    dp, bot, session, deps = stack
+    _, markup = await _open(dp, bot, session, "a:set")
+    assert "a:acc" in _callbacks(markup) and "a:set:report" in _callbacks(markup)
+
+    _, markup = await _open(dp, bot, session, "a:flow:sub")
+    assert "a:set:channel" in _callbacks(markup) and "a:set:private" in _callbacks(markup)
+
+    _, markup = await _open(dp, bot, session, "a:stat")
+    assert "a:stat:reset" in _callbacks(markup) and "a:stat:chat" in _callbacks(markup)

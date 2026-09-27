@@ -23,6 +23,7 @@ from bot.handlers.admin.common import (
     kb,
     parse_buttons,
     preview,
+    require_owner,
     safe_excerpt,
     screen_text,
     show,
@@ -96,7 +97,7 @@ async def broadcast_screen(target, deps) -> None:
     await show(target, text, kb(rows))
 
 
-async def broadcast_card(target, deps, broadcast_id: int) -> None:
+async def broadcast_card(target, deps, broadcast_id: int, is_owner: bool) -> None:
     row = await deps.broadcasts.get(broadcast_id)
     if row is None:
         await broadcast_screen(target, deps)
@@ -118,7 +119,8 @@ async def broadcast_card(target, deps, broadcast_id: int) -> None:
         rows.append([("🔔 Проверка подписки: сменить", f"a:bc:sub:{broadcast_id}")])
         rows.append([("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")])
         rows.append([("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")])
-    if row["status"] != "running":
+    if is_owner and row["status"] != "running":
+        # Удаление из истории — необратимо и не нужно роли admin для повседневной работы.
         rows.append([("🗑 Удалить", f"a:bc:del:{broadcast_id}")])
     rows.append([("⬅️ К списку", "a:bc")])
     await show(target, text, kb(rows))
@@ -133,17 +135,19 @@ async def cb_sub_mode(call: CallbackQuery, deps) -> None:
         return
     await deps.broadcasts.set_sub_mode(broadcast_id, NEXT_SUB_MODE.get(row["sub_mode"], "off"))
     await call.answer("Готово")
-    await broadcast_card(call, deps, broadcast_id)
+    await broadcast_card(call, deps, broadcast_id, deps.config.is_admin(call.from_user.id))
 
 
 @router.callback_query(F.data.startswith("a:bc:o:"))
 async def cb_open(call: CallbackQuery, deps) -> None:
-    await broadcast_card(call, deps, int(call.data.split(":")[-1]))
+    await broadcast_card(call, deps, int(call.data.split(":")[-1]), deps.config.is_admin(call.from_user.id))
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("a:bc:del:"))
 async def cb_delete_ask(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     broadcast_id = int(call.data.split(":")[-1])
     await show(
         call,
@@ -155,6 +159,8 @@ async def cb_delete_ask(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data.startswith("a:bc:delok:"))
 async def cb_delete_do(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     broadcast_id = int(call.data.split(":")[-1])
     if await deps.broadcasts.delete(broadcast_id):
         await call.answer("Удалил")
@@ -443,7 +449,7 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
         return
     broadcast_id, total = await deps.engine.prepare(call.from_user.id, segment, messages)
     await state.clear()
-    await broadcast_card(call, deps, broadcast_id)
+    await broadcast_card(call, deps, broadcast_id, deps.config.is_admin(call.from_user.id))
     await call.answer()
 
 

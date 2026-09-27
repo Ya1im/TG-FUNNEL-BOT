@@ -7,7 +7,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from bot.handlers.admin.common import ViewerAdd, kb, screen_text, show
+from bot.handlers.admin.common import ViewerAdd, kb, require_owner, screen_text, show
 
 router = Router(name="admin-access")
 
@@ -47,13 +47,17 @@ async def access_screen(target, deps) -> None:
 
 @router.callback_query(F.data == "a:acc")
 async def cb_access(call: CallbackQuery, deps, state: FSMContext) -> None:
+    if not await require_owner(call, deps):
+        return
     await state.clear()
     await access_screen(call, deps)
     await call.answer()
 
 
 @router.callback_query(F.data == "a:acc:link")
-async def cb_link(call: CallbackQuery) -> None:
+async def cb_link(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     await show(
         call,
         screen_text(
@@ -67,6 +71,8 @@ async def cb_link(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.in_(("a:acc:link:stats", "a:acc:link:admin")))
 async def cb_link_role(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     role = call.data.rsplit(":", 1)[-1]
     token = await deps.access.create_invite(created_by=call.from_user.id, role=role)
     me = await call.bot.me()
@@ -84,7 +90,9 @@ async def cb_link_role(call: CallbackQuery, deps) -> None:
 
 
 @router.callback_query(F.data == "a:acc:add")
-async def cb_add(call: CallbackQuery) -> None:
+async def cb_add(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     await show(
         call,
         screen_text(
@@ -97,7 +105,9 @@ async def cb_add(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.in_(("a:acc:add:stats", "a:acc:add:admin")))
-async def cb_add_role(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_add_role(call: CallbackQuery, state: FSMContext, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     role = call.data.rsplit(":", 1)[-1]
     await state.set_state(ViewerAdd.waiting_value)
     await state.update_data(role=role)
@@ -141,7 +151,9 @@ async def on_add_value(message: Message, state: FSMContext, deps) -> None:
 
 
 @router.callback_query(F.data.startswith("a:acc:del:"))
-async def cb_delete_ask(call: CallbackQuery) -> None:
+async def cb_delete_ask(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     tg_id = int(call.data.split(":")[-1])
     await show(
         call,
@@ -153,6 +165,8 @@ async def cb_delete_ask(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("a:acc:delok:"))
 async def cb_delete_do(call: CallbackQuery, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     await deps.access.remove(int(call.data.split(":")[-1]))
     await call.answer("Убрал")
     await access_screen(call, deps)

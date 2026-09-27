@@ -14,6 +14,7 @@ from bot.handlers.admin.common import (
     kb,
     message_text,
     preview,
+    require_owner,
     safe_excerpt,
     screen_text,
     show,
@@ -60,32 +61,34 @@ def _group_of(key: str) -> str:
     return "hello"
 
 
-async def settings_screen(target, deps) -> None:
+async def settings_screen(target, deps, is_owner: bool) -> None:
     media_total = await deps.media.count()
     report = (await deps.settings.get("report_chat_id")).strip()
     body = (
         f"🎬 Медиатека: {media_total} файл(ов)\n"
         f"📤 Чат для отчётов: {('<code>%s</code>' % report) if report else 'не задан'}"
     )
+    rows = [
+        [("🎬 Медиатека", "a:media")],
+        [("✏️ Все тексты и кнопки", "a:set:texts")],
+    ]
+    if is_owner:
+        # Чат для отчётов и доступ к админке — опасные/технические настройки,
+        # роль admin (клиент) их не видит и не может открыть напрямую (require_owner ниже).
+        rows.append([("📤 Чат для отчётов", "a:set:report")])
+        rows.append([("👥 Доступ к статистике", "a:acc")])
+    rows.append([("⬅️ Назад", "a:menu")])
     await show(
         target,
         screen_text("⚙️ Настройки", "Общее для всего бота. Шаги воронки — в разделе «Воронка».", body),
-        kb(
-            [
-                [("🎬 Медиатека", "a:media")],
-                [("✏️ Все тексты и кнопки", "a:set:texts")],
-                [("📤 Чат для отчётов", "a:set:report")],
-                [("👥 Доступ к статистике", "a:acc")],
-                [("⬅️ Назад", "a:menu")],
-            ]
-        ),
+        kb(rows),
     )
 
 
 @router.callback_query(F.data == "a:set")
 async def cb_settings(call: CallbackQuery, deps, state: FSMContext) -> None:
     await state.clear()
-    await settings_screen(call, deps)
+    await settings_screen(call, deps, deps.config.is_admin(call.from_user.id))
     await call.answer()
 
 
@@ -93,7 +96,9 @@ async def cb_settings(call: CallbackQuery, deps, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.in_({"a:set:channel", "a:set:private"}))
-async def cb_channel(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_channel(call: CallbackQuery, state: FSMContext, deps) -> None:
+    if not await require_owner(call, deps):
+        return
     field = "private" if call.data.endswith("private") else "channel"
     await state.set_state(ChannelSet.waiting_value)
     await state.update_data(field=field)
@@ -130,7 +135,7 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
             await deps.settings.set("channel_url", "")
             await deps.settings.set("channel_title", "")
         await state.clear()
-        await subscription_screen(message, deps)
+        await subscription_screen(message, deps, deps.config.is_admin(message.from_user.id))
         return
 
     if isinstance(raw, str) and not raw.lstrip("-").isdigit() and not raw.startswith("@"):
@@ -187,12 +192,14 @@ async def on_channel_value(message: Message, state: FSMContext, deps) -> None:
         await deps.settings.set("channel_url", url)
         await deps.settings.set("channel_title", chat.title or "")
     await state.clear()
-    await subscription_screen(message, deps)
+    await subscription_screen(message, deps, deps.config.is_admin(message.from_user.id))
 
 
 @router.callback_query(F.data == "a:set:force")
 async def cb_channel_force(call: CallbackQuery, state: FSMContext, deps) -> None:
     """Сохранить канал, даже если Telegram не показал у бота прав админа."""
+    if not await require_owner(call, deps):
+        return
     data = await state.get_data()
     if not data.get("pending_id"):
         await call.answer("Нечего сохранять, начни заново", show_alert=True)
@@ -205,7 +212,7 @@ async def cb_channel_force(call: CallbackQuery, state: FSMContext, deps) -> None
         await deps.settings.set("channel_title", data.get("pending_title", ""))
     await state.clear()
     await call.answer("Сохранил")
-    await subscription_screen(call, deps)
+    await subscription_screen(call, deps, deps.config.is_admin(call.from_user.id))
 
 
 # --- кружок приветствия ---------------------------------------------------
