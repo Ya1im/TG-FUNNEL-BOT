@@ -25,7 +25,10 @@ class FunnelRepo:
         buttons: list[dict] | None = None,
         requires_subscription: bool = False,
         on_unsub: str = "skip",
+        backfill: bool = True,
     ) -> int:
+        """backfill=False — массовая загрузка всей цепочки разом (import_json, seed): здесь это не
+        «добавили один новый шаг», а пересборка с нуля, задним числом никому ничего не шлём."""
         position = int(
             await self.db.fetchval("SELECT COALESCE(MAX(position), 0) + 1 FROM funnel_steps", default=1)
         )
@@ -43,7 +46,8 @@ class FunnelRepo:
                 int(time.time()),
             ),
         )
-        await self.backfill_step(step_id, position, int(delay_seconds))
+        if backfill:
+            await self.backfill_step(step_id, position, int(delay_seconds))
         return step_id
 
     async def backfill_step(self, step_id: int, position: int, delay_seconds: int) -> int:
@@ -212,6 +216,7 @@ class FunnelRepo:
                 requires_subscription=bool(item.get("requires_subscription")),
                 # старые выгрузки без поля напоминали автоматически — не меняем это молча
                 on_unsub=item.get("on_unsub") or ("remind" if item.get("requires_subscription") else "skip"),
+                backfill=False,  # массовая пересборка цепочки — не «добавили новый шаг»
             )
             if not item.get("enabled", True):
                 await self.update_step(step_id, enabled=0)

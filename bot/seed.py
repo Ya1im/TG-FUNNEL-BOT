@@ -59,6 +59,7 @@ async def main() -> None:
             await funnel.add_step(
                 delay_seconds=delay, text=text, buttons=buttons, requires_subscription=gated,
                 on_unsub="remind" if gated else "skip",
+                backfill=False,  # первичное наполнение пустой воронки — не «добавили новый шаг»
             )
         print(f"Добавил шагов прогрева: {len(STEPS)}")
     else:
