@@ -387,6 +387,18 @@ async def test_admin_gets_command_menu_on_start(stack):
     assert "SetMyCommands" in scopes
 
 
+async def test_admin_start_sends_welcome_before_syncing_command_menu(stack):
+    """Синхронизация меню команд не должна задерживать приветствие: раньше
+    _sync_admin_commands дожидалась сетевого ответа Telegram ДО отправки welcome,
+    удваивая задержку на каждый /start админа (лишний round-trip к Telegram API)."""
+    dp, bot, session, deps = stack
+    media_id = await deps.media.save("krug", "video_note", "FILE_NOTE")
+    await deps.settings.set("welcome_note_media_id", str(media_id))
+    await feed(dp, bot, message=make_message("/start", user_id=ADMIN_ID))
+    names = session.names()
+    assert names.index("SendVideoNote") < names.index("SetMyCommands")
+
+
 async def test_channel_setup_reports_status_and_offers_force_save(stack, monkeypatch):
     """Если бот в канале не админ — показываем диагностику и даём сохранить вручную."""
     dp, bot, session, deps = stack

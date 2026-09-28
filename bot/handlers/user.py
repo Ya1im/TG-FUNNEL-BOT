@@ -22,8 +22,10 @@ async def cmd_start(message: Message, command: CommandObject, deps: Deps) -> Non
     if payload and payload.startswith("v_"):
         await _redeem_viewer_invite(message, deps, payload[2:])
         return
-    await _sync_admin_commands(message, deps)
+    # Приветствие — в первую очередь: меню команд не влияет на то, что видит человек,
+    # и не должно задерживать welcome лишним походом в Telegram API (см. CLAUDE.md, грабли).
     await start_flow(message.bot, deps, message.from_user, message.chat.id, payload)
+    await _sync_admin_commands(message, deps)
 
 
 async def _redeem_viewer_invite(message: Message, deps: Deps, token: str) -> None:
