@@ -145,17 +145,6 @@ def test_session_is_default_without_proxy_settings():
     assert build_session(config) is None
 
 
-def test_session_uses_api_mirror():
-    from bot.__main__ import build_session
-
-    config = Config.from_env(
-        {"BOT_TOKEN": FAKE_TOKEN, "ADMIN_IDS": "1", "TELEGRAM_API_BASE": "https://tg.example.dev/"}
-    )
-    session = build_session(config)
-    assert "tg.example.dev" in session.api.base
-    assert "tg.example.dev" in session.api.api_url(token="X", method="getMe")
-
-
 def test_session_uses_socks_proxy():
     from bot.__main__ import build_session
 

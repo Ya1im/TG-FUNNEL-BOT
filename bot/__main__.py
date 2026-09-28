@@ -7,7 +7,6 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -33,20 +32,16 @@ def build_dispatcher(deps: Deps) -> Dispatcher:
 
 
 def build_session(config: Config) -> AiohttpSession | None:
-    """Если хостер режет Telegram — ходим через прокси или зеркало API."""
-    kwargs: dict = {}
-    if config.proxy:
-        kwargs["proxy"] = config.proxy
-        log.info("Выход в Telegram через прокси %s", config.proxy.split("@")[-1])
-    if config.api_base:
-        kwargs["api"] = TelegramAPIServer.from_base(config.api_base)
-        log.info("Telegram API через зеркало %s", config.api_base)
-    return AiohttpSession(**kwargs) if kwargs else None
+    """Если хостер режет Telegram — можно выйти через SOCKS5/HTTP прокси."""
+    if not config.proxy:
+        return None
+    log.info("Выход в Telegram через прокси %s", config.proxy.split("@")[-1])
+    return AiohttpSession(proxy=config.proxy)
 
 
 async def set_commands(bot: Bot, config: Config) -> None:
-    # Сбой сети (например, недоступное на секунду зеркало Telegram API) здесь не должен
-    # ронять весь процесс — список команд не критичен для работы бота, в отличие от polling.
+    # Кратковременный сбой сети до Telegram здесь не должен ронять весь процесс —
+    # список команд не критичен для работы бота, в отличие от polling.
     try:
         await bot.set_my_commands(
             [BotCommand(command="start", description="Начать")], scope=BotCommandScopeDefault()

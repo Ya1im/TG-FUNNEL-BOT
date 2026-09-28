@@ -107,27 +107,28 @@ TXT
     exit 1
   fi
 
-  echo "▶️  Проверяю, достаёт ли новый сервер до Telegram напрямую (без зеркала) ..."
+  echo "▶️  Проверяю, достаёт ли новый сервер до Telegram напрямую ..."
+  # Код бота больше не умеет ходить через зеркало (TELEGRAM_API_BASE убран 29.09.2026) —
+  # переменную просто выкидываем из .env в любом случае, она ни на что не влияет.
   BOT_TOKEN="$(printf '%s\n' "$OLD_ENV" | grep -m1 '^BOT_TOKEN=' | cut -d= -f2- | tr -d '"'\''\r')"
   DIRECT_OK="no"
   if [ -n "$BOT_TOKEN" ]; then
     HTTP_CODE="$(ssh_new "curl -s -o /dev/null -w '%{http_code}' --max-time 8 'https://api.telegram.org/bot${BOT_TOKEN}/getMe'" || echo "000")"
     if [ "$HTTP_CODE" = "200" ]; then
       DIRECT_OK="yes"
-      echo "   ✅ Прямой доступ к api.telegram.org работает (HTTP 200) — зеркало на новом сервере не нужно."
+      echo "   ✅ Прямой доступ к api.telegram.org работает (HTTP 200)."
     else
-      echo "   ⚠️  Прямой доступ не получился (HTTP $HTTP_CODE) — оставляю TELEGRAM_API_BASE как на старом сервере."
+      echo "   ❌ Прямого доступа нет (HTTP $HTTP_CODE) — бот на этом сервере работать НЕ будет:"
+      echo "      код больше не поддерживает зеркало API, единственный запасной вариант —"
+      echo "      TELEGRAM_PROXY=socks5://... (вписать в .env на сервере вручную)."
     fi
   else
     echo "   ⚠️  Не нашёл BOT_TOKEN в .env — пропускаю проверку, оставляю .env как есть."
   fi
 
-  NEW_ENV="$OLD_ENV"
-  if [ "$DIRECT_OK" = "yes" ]; then
-    NEW_ENV="$(printf '%s\n' "$OLD_ENV" | grep -v '^TELEGRAM_API_BASE=')"
-  fi
+  NEW_ENV="$(printf '%s\n' "$OLD_ENV" | grep -v '^TELEGRAM_API_BASE=')"
   printf '%s\n' "$NEW_ENV" | ssh_new "cat > '$REMOTE_DIR/.env'"
-  echo "   .env записан на новый сервер ($([ "$DIRECT_OK" = "yes" ] && echo "зеркало отключено" || echo "зеркало оставлено как есть"))."
+  echo "   .env записан на новый сервер (TELEGRAM_API_BASE, если был, убран — код его больше не читает)."
 
   echo "▶️  Собираю образ на новом сервере (НЕ запускаю — старый бот продолжает работать) ..."
   ssh_new "cd '$REMOTE_DIR' && docker compose build"
