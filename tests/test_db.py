@@ -97,3 +97,49 @@ async def test_old_viewers_table_gets_role_column(tmp_path):
         await db.apply_schema()  # повторный запуск ничего не ломает
     finally:
         await db.close()
+
+
+async def test_old_database_gets_click_columns(tmp_path):
+    import sqlite3
+
+    from bot.db import Database
+
+    path = tmp_path / "old_click.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE users (
+            tg_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
+            started_at INTEGER NOT NULL, source TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            is_subscribed INTEGER NOT NULL DEFAULT 0, sub_checked_at INTEGER,
+            material_sent_at INTEGER, funnel_started_at INTEGER);
+        INSERT INTO users(tg_id, started_at) VALUES (1, 0);
+        CREATE TABLE funnel_steps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, position INTEGER NOT NULL,
+            delay_seconds INTEGER NOT NULL, requires_subscription INTEGER NOT NULL DEFAULT 0,
+            on_unsub TEXT NOT NULL DEFAULT 'skip',
+            text TEXT, media_id INTEGER, buttons_json TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+        INSERT INTO funnel_steps(position, delay_seconds, text, created_at) VALUES (1, 0, 'x', 0);
+        """
+    )
+    con.commit()
+    con.close()
+
+    db = await Database(path).connect()
+    try:
+        for table, column in [
+            ("users", "lesson_clicked_at"),
+            ("users", "deliver_claim_at"),
+            ("users", "funnel_fast"),
+            ("funnel_steps", "stop_on_click"),
+            ("funnel_steps", "after_click_seconds"),
+        ]:
+            assert await db._has_column(table, column), f"{table}.{column}"
+        row = await db.fetchone("SELECT funnel_fast FROM users WHERE tg_id = 1")
+        assert row["funnel_fast"] == 0
+        assert (await db.fetchone("SELECT stop_on_click FROM funnel_steps"))["stop_on_click"] == 0
+        await db.apply_schema()  # повторный запуск ничего не ломает
+    finally:
+        await db.close()

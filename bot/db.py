@@ -59,6 +59,15 @@ class Database:
             await self.conn.execute(
                 "UPDATE funnel_steps SET on_unsub = 'remind' WHERE requires_subscription = 1"
             )
+        for table, column, ddl in (
+            ("users", "lesson_clicked_at", "INTEGER"),
+            ("users", "deliver_claim_at", "INTEGER"),
+            ("users", "funnel_fast", "INTEGER NOT NULL DEFAULT 0"),
+            ("funnel_steps", "stop_on_click", "INTEGER NOT NULL DEFAULT 0"),
+            ("funnel_steps", "after_click_seconds", "INTEGER"),
+        ):
+            if not await self._has_column(table, column):
+                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         if not await self._has_column("broadcasts", "sub_mode"):
             await self.conn.execute(
                 "ALTER TABLE broadcasts ADD COLUMN sub_mode TEXT NOT NULL DEFAULT 'off'"

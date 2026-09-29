@@ -234,15 +234,18 @@ async def capture_content(deps, message: Message, slug_prefix: str) -> tuple[str
 
 
 def parse_buttons(raw: str) -> list[dict]:
-    """«Текст | https://ссылка» построчно."""
+    """«Текст | https://ссылка» построчно; третье поле «клик» включает учёт нажатия."""
     buttons = []
     for line in (raw or "").splitlines():
         if "|" not in line:
             continue
-        text, _, url = line.partition("|")
-        text, url = text.strip(), url.strip()
+        parts = [p.strip() for p in line.split("|")]
+        text, url = parts[0], parts[1]
         if text and url.startswith("http"):
-            buttons.append({"text": text, "url": url})
+            button = {"text": text, "url": url}
+            if len(parts) > 2 and parts[2].lower() == "клик":
+                button["track"] = True
+            buttons.append(button)
     return buttons
 
 
@@ -251,7 +254,7 @@ def buttons_hint(buttons_json: str | None) -> str:
         buttons = json.loads(buttons_json or "[]")
     except (ValueError, TypeError):
         buttons = []
-    return ", ".join(b["text"] for b in buttons) if buttons else "нет"
+    return ", ".join(b["text"] + (" 🎯" if b.get("track") else "") for b in buttons) if buttons else "нет"
 
 
 KIND_ICONS = {

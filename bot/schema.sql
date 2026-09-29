@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS users (
     is_subscribed    INTEGER NOT NULL DEFAULT 0,
     sub_checked_at   INTEGER,
     material_sent_at INTEGER,
-    funnel_started_at INTEGER
+    funnel_started_at INTEGER,
+    lesson_clicked_at INTEGER,          -- первый клик по кнопке урока (NULL — не было)
+    deliver_claim_at  INTEGER,          -- защита от двойной выдачи урока
+    funnel_fast       INTEGER NOT NULL DEFAULT 0  -- воронка поставлена в быстром тестовом режиме
 );
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_users_source ON users(source);
@@ -31,6 +34,8 @@ CREATE TABLE IF NOT EXISTS funnel_steps (
     delay_seconds         INTEGER NOT NULL,
     requires_subscription INTEGER NOT NULL DEFAULT 0,
     on_unsub              TEXT    NOT NULL DEFAULT 'skip',  -- skip | remind: что делать, если не подписан
+    stop_on_click         INTEGER NOT NULL DEFAULT 0,       -- шаг отменяется после клика по уроку
+    after_click_seconds   INTEGER,                          -- «первый призыв»: через сколько после клика слать
     text                  TEXT,
     media_id              INTEGER REFERENCES media(id) ON DELETE SET NULL,
     buttons_json          TEXT,

@@ -95,7 +95,8 @@ class UsersRepo:
         """Сброс прохождения — для повторного теста воронки."""
         await self.db.execute(
             "UPDATE users SET material_sent_at = NULL, funnel_started_at = NULL, "
-            "is_subscribed = 0, sub_checked_at = NULL, status = 'active' WHERE tg_id = ?",
+            "is_subscribed = 0, sub_checked_at = NULL, status = 'active', "
+            "lesson_clicked_at = NULL, deliver_claim_at = NULL, funnel_fast = 0 WHERE tg_id = ?",
             (tg_id,),
         )
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
