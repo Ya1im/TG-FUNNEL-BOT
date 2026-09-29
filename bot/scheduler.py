@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from bot.preprod import allowed_user_ids
+from bot.preprod import allowed_user_ids, timing_note
 from bot.reminder import send_reminder
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
@@ -89,7 +89,7 @@ class Scheduler:
         rows = await self.funnel.due_steps(int(self.now()), limit=BATCH, only_users=allowed)
         reminded: set[int] = set()
         for row in rows:
-            await self._process(row, stats, reminded)
+            await self._process(row, stats, reminded, preprod=allowed is not None)
         if self.broadcast_hook is not None:
             await self.broadcast_hook()
         if self.backup_hook is not None:
@@ -100,7 +100,7 @@ class Scheduler:
             log.info("Тик: %s", stats)
         return stats
 
-    async def _process(self, row, stats: dict[str, int], reminded: set[int]) -> None:
+    async def _process(self, row, stats: dict[str, int], reminded: set[int], preprod: bool = False) -> None:
         user_id = row["user_id"]
         queue_id = row["queue_id"]
 
@@ -136,6 +136,8 @@ class Scheduler:
                 stats["held"] += 1
                 return
 
+        if preprod and row["attempts"] == 0:
+            await self._send_timing_note(row)
         outcome = await send_block(
             block_from_row(row),
             self.bot,
@@ -158,6 +160,20 @@ class Scheduler:
             else:
                 await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, outcome.error)
                 stats["failed"] += 1
+
+    async def _send_timing_note(self, row) -> None:
+        """Предпрод: перед постом — беззвучная пометка «когда это пришло бы человеку»."""
+        note = await timing_note(self.funnel, row["step_id"])
+        if not note:
+            return
+        user_id = row["user_id"]
+        outcome = await safe_send(
+            lambda: self.bot.send_message(user_id, note, disable_notification=True),
+            chat_id=user_id, users=self.users, limiter=self.limiter,
+        )
+        message_id = getattr(outcome.result, "message_id", None) if outcome.ok else None
+        if self.sent_log is not None and isinstance(message_id, int):
+            await self.sent_log.add(user_id, [message_id], "step", row["step_id"], int(self.now()))
 
     async def _int_setting(self, key: str, default: int) -> int:
         value = await self.settings.get_int(key)

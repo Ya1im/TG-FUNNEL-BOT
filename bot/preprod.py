@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from bot.repo.funnel import human_delay
+
 
 async def allowed_user_ids(settings, admin_ids=()) -> set[int] | None:
     """None — предпрод выключен (получатели любые). Иначе — множество допустимых получателей:
@@ -30,6 +32,44 @@ async def init_preprod(settings) -> bool:
     await settings.set("preprod_mode", "1")
     await settings.set("preprod_initialized", "1")
     return True
+
+
+async def init_chain(funnel, settings, now: int | None = None) -> int:
+    """Один раз при первом запуске версии с цепочкой «от предыдущего поста»: очередь всех людей
+    перестраивается, просроченные головные шаги отсчитываются от момента запуска — без залпа.
+    Возвращает, сколько сроков перенесено (0 — уже выполнено или переносить нечего)."""
+    if (await settings.get("chain_initialized")).strip():
+        return 0
+    rebased = await funnel.rebase_overdue_heads(now)
+    await settings.set("chain_initialized", "1")
+    return rebased
+
+
+def human_span(seconds: int) -> str:
+    """Точный срок словами: «1 д 20 ч 30 мин»."""
+    seconds = int(seconds)
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    parts = [f"{days} д" if days else "", f"{hours} ч" if hours else "", f"{minutes} мин" if minutes else ""]
+    return " ".join(p for p in parts if p) or f"{seconds} сек"
+
+
+async def timing_note(funnel, step_id: int) -> str | None:
+    """Пометка для тестового аккаунта: через сколько этот пост пришёл бы настоящему человеку."""
+    steps = await funnel.list_steps(only_enabled=True)
+    total, cumulative = len(steps), 0
+    for index, step in enumerate(steps, start=1):
+        cumulative += int(step["delay_seconds"])
+        if step["id"] != step_id:
+            continue
+        delay = human_span(step["delay_seconds"])
+        if index == 1:
+            when = f"через {delay} после получения урока"
+        else:
+            when = f"через {delay} после предыдущего поста (≈ через {human_span(cumulative)} после урока)"
+        return f"🧪 Предпрод · пост {index} из {total}\nРеальному человеку придёт {when}"
+    return None
 
 
 def parse_ids(raw: str) -> list[int]:

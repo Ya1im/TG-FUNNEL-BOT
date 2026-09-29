@@ -18,7 +18,7 @@ from bot.db import Database
 from bot.deps import Deps
 from bot.handlers import build_router
 from bot.scheduler import Scheduler
-from bot.preprod import init_preprod
+from bot.preprod import init_chain, init_preprod
 from bot.services import auto_deliver_due, init_auto_delivery, migrate_repeat_start_blocks
 from bot.stats_export import stats_export_hook
 
@@ -82,6 +82,9 @@ async def main() -> None:
     deps = Deps.build(config, db, bot)
     await migrate_repeat_start_blocks(deps)
     await init_auto_delivery(deps)
+    rebased = await init_chain(deps.funnel, deps.settings)
+    if rebased:
+        log.warning("Очередь прогрева перестроена под цепочку «от предыдущего поста»: перенесено сроков — %s", rebased)
     if await init_preprod(deps.settings):
         log.warning("Предпрод-режим ВКЛЮЧЁН по умолчанию: посты прогрева, рассылки и автовыдача уходят только тестовым аккаунтам")
     deps.engine = BroadcastEngine(

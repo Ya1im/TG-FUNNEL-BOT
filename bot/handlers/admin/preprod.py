@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.admin.common import PreprodAdd, kb, require_owner, screen_text, show
 from bot.preprod import is_enabled, parse_ids
+from bot.repo.funnel import NOT_SCHEDULED, human_delay
 
 router = Router(name="admin-preprod")
 
@@ -56,8 +57,8 @@ async def cb_preprod_toggle(call: CallbackQuery, deps) -> None:
             screen_text(
                 "🟢 Выпустить в продакшен?",
                 "Публикации пойдут всем.",
-                "Ожидающие посты, срок которых уже наступил, уйдут ВСЕМ сразу. "
-                "Если вы только что вносили шаги в бота — сначала проверьте очередь.",
+                "Просроченные посты не уйдут залпом: у каждого человека ближайший пост придёт через "
+                "СВОЮ задержку после выпуска, дальше цепочка «от предыдущего поста».",
             ),
             kb([[("✅ Да, выпустить", "a:pre:off")], [("⬅️ Отмена", "a:pre")]]),
         )
@@ -71,9 +72,11 @@ async def cb_preprod_toggle(call: CallbackQuery, deps) -> None:
 async def cb_preprod_off(call: CallbackQuery, deps) -> None:
     if not await require_owner(call, deps):
         return
+    # сначала переносим просроченные сроки и только потом открываем отправку — иначе тик успеет отправить залп
+    rebased = await deps.funnel.rebase_overdue_heads()
     await deps.settings.set("preprod_mode", "0")
     await preprod_screen(call, deps)
-    await call.answer("Предпрод выключен")
+    await call.answer(f"Выпущено. Просроченных постов перенесено: {rebased}", show_alert=True)
 
 
 @router.callback_query(F.data == "a:pre:add")
@@ -123,15 +126,21 @@ async def cb_preprod_schedule(call: CallbackQuery, deps) -> None:
     lines: list[str] = []
     for uid in ids:
         rows = await deps.db.fetchall(
-            "SELECT fs.position, us.due_at, us.status, us.sent_at, us.last_error "
+            "SELECT fs.position, fs.delay_seconds, us.due_at, us.status, us.sent_at, us.last_error "
             "FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
             "WHERE us.user_id = ? ORDER BY fs.position, fs.id",
             (uid,),
         )
         lines.append(f"<b>{uid}</b>" + ("" if rows else " — очереди нет (пройдите /start и получите урок)"))
         for row in rows[:40]:
-            when = datetime.fromtimestamp(row["sent_at"] if row["sent_at"] else row["due_at"], MSK)
             note = f" ({row['last_error']})" if row["last_error"] else ""
+            if row["status"] == "pending" and row["due_at"] >= NOT_SCHEDULED:
+                lines.append(
+                    f"{STATUS_ICON['pending']} шаг {row['position']} — по очереди: "
+                    f"через {human_delay(row['delay_seconds'])} после предыдущего поста{note}"
+                )
+                continue
+            when = datetime.fromtimestamp(row["sent_at"] if row["sent_at"] else row["due_at"], MSK)
             lines.append(
                 f"{STATUS_ICON.get(row['status'], '•')} шаг {row['position']} — "
                 f"{'отправлен' if row['status'] == 'sent' else 'по плану'} {when:%d.%m %H:%M} МСК{note}"
