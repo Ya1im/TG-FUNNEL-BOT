@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Деплой бота на VPS одной командой:
-#   ./deploy.sh root@136.234.5.215
+# Деплой бота на VPS одной командой. По умолчанию — НОВЫЙ сервер (Финляндия, 46.62.140.16):
+#   ./deploy.sh root@46.62.140.16
 # Второй аргумент — папка на сервере (по умолчанию /opt/funnel-bot).
 #
 # Код на сервер идёт через git pull из приватного репозитория на GitHub,
@@ -9,7 +9,7 @@
 # .env и data/ не отслеживаются и не трогаются.
 set -euo pipefail
 
-SERVER="${1:-root@136.234.5.215}"
+SERVER="${1:-root@46.62.140.16}"
 REMOTE_DIR="${2:-/opt/funnel-bot}"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_URL="git@github.com:Ya1im/TG-FUNNEL-BOT.git"

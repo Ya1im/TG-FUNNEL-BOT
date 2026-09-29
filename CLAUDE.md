@@ -38,7 +38,7 @@
 | Где | Что |
 |---|---|
 | `~/Desktop/тима` (мак) | рабочая копия, git-репозиторий, remote `origin` — GitHub `Ya1im/TG-FUNNEL-BOT` (приватный) |
-| `/opt/funnel-bot` (VPS 136.234.5.215, hostname `kera`) | прод, docker compose, тоже git-репозиторий (обновляется `git pull`) |
+| `/opt/funnel-bot` (VPS 46.62.140.16, Hetzner Финляндия; старый сервер 136.234.5.215 остановлен, его НЕ деплоить) | прод, docker compose, тоже git-репозиторий (обновляется `git pull`) |
 | `data/bot.db` | SQLite: пользователи, медиатека, воронка, рассылки, настройки |
 | `data/backups/` | ежедневные копии базы, хранятся 14 |
 | `docs/superpowers/specs/` и `plans/` | спека и план реализации |
@@ -74,7 +74,7 @@ make install && make test                  # если запускаешь с ma
 Деплой — с мака одной командой:
 
 ```bash
-cd ~/Desktop/тима && bash deploy.sh root@136.234.5.215
+cd ~/Desktop/тима && bash deploy.sh root@46.62.140.16
 ```
 
 Скрипт сам пушит локальные коммиты в GitHub, тянет их на сервер через `git pull` (не файлами —
