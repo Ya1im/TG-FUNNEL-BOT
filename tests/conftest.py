@@ -16,6 +16,8 @@ ROUTER_MODULES = [
     "bot.handlers.admin.flow",
     "bot.handlers.admin.media",
     "bot.handlers.admin.funnel",
+    "bot.handlers.admin.recall",
+    "bot.handlers.admin.preprod",
     "bot.handlers.admin.material",
     "bot.handlers.admin.repeat_start",
     "bot.handlers.admin.settings",

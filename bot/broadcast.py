@@ -6,6 +6,7 @@ import time
 from typing import Awaitable, Callable
 
 from bot.content import ContentBlock
+from bot.preprod import allowed_user_ids
 from bot.reminder import send_reminder
 from bot.sender import BLOCKED, SENT, safe_send, send_block
 
@@ -19,7 +20,7 @@ PROGRESS_EVERY = 5.0  # секунд между обновлениями про�
 class BroadcastEngine:
     def __init__(
         self, bot, users, broadcasts, limiter=None, now: Callable[[], float] = time.time,
-        gate=None, settings=None,
+        gate=None, settings=None, sent_log=None,
     ):
         self.bot = bot
         self.users = users
@@ -28,6 +29,12 @@ class BroadcastEngine:
         self.now = now
         self.gate = gate
         self.settings = settings
+        self.sent_log = sent_log
+
+    async def _allowed(self):
+        if self.settings is None:
+            return None
+        return await allowed_user_ids(self.settings, self.users.admin_ids)
 
     async def prepare(
         self,
@@ -43,6 +50,9 @@ class BroadcastEngine:
             created_by, segment, messages, segment_value, scheduled_at, sub_mode
         )
         user_ids = await self.users.segment_ids(segment, segment_value)
+        allowed = await self._allowed()
+        if allowed is not None:  # предпрод: только тестовые аккаунты
+            user_ids = [u for u in user_ids if u in allowed]
         await self.broadcasts.set_targets(broadcast_id, user_ids)
         return broadcast_id, len(user_ids)
 
@@ -64,8 +74,13 @@ class BroadcastEngine:
             targets = await self.broadcasts.pending_targets(broadcast_id, BATCH)
             if not targets:
                 break
+            allowed = await self._allowed()
             for user_id in targets:
-                status, error = await self._deliver(user_id, messages, sub_mode)
+                if allowed is not None and user_id not in allowed:
+                    # предпрод включили, пока рассылка ждала: настоящим людям ничего не уходит
+                    await self.broadcasts.mark_target(broadcast_id, user_id, "skipped", "предпрод")
+                    continue
+                status, error = await self._deliver(user_id, messages, sub_mode, broadcast_id)
                 await self.broadcasts.mark_target(broadcast_id, user_id, status, error)
                 if progress and self.now() - last_progress >= PROGRESS_EVERY:
                     last_progress = self.now()
@@ -81,7 +96,9 @@ class BroadcastEngine:
         log.info("Рассылка #%s завершена: %s", broadcast_id, stats)
         return stats
 
-    async def _deliver(self, user_id: int, messages: list[dict], sub_mode: str) -> tuple[str, str | None]:
+    async def _deliver(
+        self, user_id: int, messages: list[dict], sub_mode: str, broadcast_id: int | None = None
+    ) -> tuple[str, str | None]:
         """Проверка подписки (если админ включил её для этой рассылки) и отправка."""
         if sub_mode != "off" and self.gate is not None:
             state = await self.gate.status(user_id, cached_seconds=SUB_CACHE_SECONDS)
@@ -96,9 +113,11 @@ class BroadcastEngine:
                         return BLOCKED, None
                     return ("reminded", None) if outcome.ok else ("failed", outcome.error)
                 return "skipped", None
-        return await self._send_to(user_id, messages)
+        return await self._send_to(user_id, messages, broadcast_id)
 
-    async def _send_to(self, user_id: int, messages: list[dict]) -> tuple[str, str | None]:
+    async def _send_to(
+        self, user_id: int, messages: list[dict], broadcast_id: int | None = None
+    ) -> tuple[str, str | None]:
         user = None
         for msg in messages:
             if "chat_id" in msg and "message_id" in msg:
@@ -114,6 +133,9 @@ class BroadcastEngine:
                 outcome = await safe_send(
                     action, chat_id=user_id, users=self.users, limiter=self.limiter
                 )
+                copied = getattr(outcome.result, "message_id", None) if outcome.ok else None
+                if isinstance(copied, int):
+                    outcome.message_ids = [copied]
             else:
                 # Новый формат: текст/медиа/кнопки — как у материала и прогрева,
                 # с тем же запасным вариантом для отклонённых кружков.
@@ -127,6 +149,10 @@ class BroadcastEngine:
                 )
                 outcome = await send_block(
                     block, self.bot, user_id, user=user, users=self.users, limiter=self.limiter
+                )
+            if self.sent_log is not None and outcome.message_ids:
+                await self.sent_log.add(
+                    user_id, outcome.message_ids, "broadcast", broadcast_id, int(self.now())
                 )
             if outcome.status == BLOCKED:
                 return BLOCKED, None

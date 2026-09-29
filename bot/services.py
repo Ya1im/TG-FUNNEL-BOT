@@ -7,6 +7,7 @@ import time
 
 from aiogram.exceptions import TelegramAPIError
 
+from bot.preprod import allowed_user_ids
 from bot.content import ContentBlock, apply_placeholders, button_hash
 from bot.keyboards import link_kb, subscribe_kb
 from bot.repo.funnel import block_from_row
@@ -173,7 +174,8 @@ async def auto_deliver_due(bot, deps, now: int | None = None) -> int:
     now = int(now if now is not None else time.time())
     delivered = 0
     since = await deps.settings.get_int("auto_deliver_since") or 0
-    for user_id in await deps.users.due_for_auto_delivery(now, minutes, since=since):
+    allowed = await allowed_user_ids(deps.settings, deps.config.admin_ids if getattr(deps, "config", None) else ())
+    for user_id in await deps.users.due_for_auto_delivery(now, minutes, since=since, only_users=allowed):
         try:
             state = await deps.gate.status(user_id, cached_seconds=300)
             if await deliver_material_once(bot, deps, user_id, send_invite=(state == "yes"), now=now):

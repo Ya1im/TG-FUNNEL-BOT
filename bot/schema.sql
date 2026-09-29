@@ -126,3 +126,15 @@ CREATE TABLE IF NOT EXISTS viewer_invites (
     used_at    INTEGER,
     role       TEXT NOT NULL DEFAULT 'stats'
 );
+
+-- Номера отправленных ботом сообщений: по ним можно отозвать (удалить) публикации у людей.
+CREATE TABLE IF NOT EXISTS sent_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,   -- step | broadcast
+    ref_id     INTEGER,            -- id шага или рассылки
+    sent_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sent_messages_sent_at ON sent_messages(sent_at);
+CREATE INDEX IF NOT EXISTS idx_sent_messages_user ON sent_messages(user_id, kind, ref_id);

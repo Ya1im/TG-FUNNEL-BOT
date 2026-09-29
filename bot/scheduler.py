@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
+from bot.preprod import allowed_user_ids
 from bot.reminder import send_reminder
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
@@ -30,6 +31,7 @@ class Scheduler:
         settings,
         gate,
         limiter=None,
+        sent_log=None,
         tick_seconds: int = 60,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -44,6 +46,7 @@ class Scheduler:
         self.settings = settings
         self.gate = gate
         self.limiter = limiter
+        self.sent_log = sent_log
         self.tick_seconds = tick_seconds
         self.now = now
         self.sleep = sleep
@@ -82,7 +85,8 @@ class Scheduler:
                 await self.deliver_hook()
             except Exception:  # noqa: BLE001 — автовыдача не должна останавливать прогрев
                 log.exception("Ошибка автовыдачи урока")
-        rows = await self.funnel.due_steps(int(self.now()), limit=BATCH)
+        allowed = await allowed_user_ids(self.settings, self.funnel.admin_ids)
+        rows = await self.funnel.due_steps(int(self.now()), limit=BATCH, only_users=allowed)
         reminded: set[int] = set()
         for row in rows:
             await self._process(row, stats, reminded)
@@ -140,6 +144,8 @@ class Scheduler:
             users=self.users,
             limiter=self.limiter,
         )
+        if self.sent_log is not None and outcome.message_ids:
+            await self.sent_log.add(user_id, outcome.message_ids, "step", row["step_id"], int(self.now()))
         if outcome.ok:
             await self.funnel.mark_sent(queue_id)
             stats["sent"] += 1

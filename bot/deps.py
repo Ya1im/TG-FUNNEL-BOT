@@ -12,6 +12,7 @@ from bot.repo.funnel import FunnelRepo
 from bot.repo.material import MaterialRepo
 from bot.repo.media import MediaRepo
 from bot.repo.repeat_start import RepeatStartRepo
+from bot.repo.sentlog import SentLogRepo
 from bot.repo.settings import SettingsRepo
 from bot.repo.users import UsersRepo
 from bot.sender import RateLimiter
@@ -34,6 +35,7 @@ class Deps:
     access: AccessRepo = None
     engine: Any = None
     scheduler: Any = None
+    sent_log: SentLogRepo = None
 
     @classmethod
     def build(cls, config: Config, db: Database, bot) -> "Deps":
@@ -52,4 +54,5 @@ class Deps:
             repeat_start=RepeatStartRepo(db),
             broadcasts=BroadcastsRepo(db),
             access=AccessRepo(db),
+            sent_log=SentLogRepo(db),
         )

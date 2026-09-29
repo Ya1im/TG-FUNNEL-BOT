@@ -18,6 +18,7 @@ from bot.db import Database
 from bot.deps import Deps
 from bot.handlers import build_router
 from bot.scheduler import Scheduler
+from bot.preprod import init_preprod
 from bot.services import auto_deliver_due, init_auto_delivery, migrate_repeat_start_blocks
 from bot.stats_export import stats_export_hook
 
@@ -81,8 +82,11 @@ async def main() -> None:
     deps = Deps.build(config, db, bot)
     await migrate_repeat_start_blocks(deps)
     await init_auto_delivery(deps)
+    if await init_preprod(deps.settings):
+        log.warning("Предпрод-режим ВКЛЮЧЁН по умолчанию: посты прогрева, рассылки и автовыдача уходят только тестовым аккаунтам")
     deps.engine = BroadcastEngine(
-        bot, deps.users, deps.broadcasts, deps.limiter, gate=deps.gate, settings=deps.settings
+        bot, deps.users, deps.broadcasts, deps.limiter, gate=deps.gate, settings=deps.settings,
+        sent_log=deps.sent_log,
     )
     scheduler = Scheduler(
         bot=bot,
@@ -91,6 +95,7 @@ async def main() -> None:
         settings=deps.settings,
         gate=deps.gate,
         limiter=deps.limiter,
+        sent_log=deps.sent_log,
         tick_seconds=config.tick_seconds,
         deliver_hook=lambda: auto_deliver_due(bot, deps),
         broadcast_hook=deps.engine.run_scheduled,

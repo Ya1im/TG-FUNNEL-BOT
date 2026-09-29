@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from aiogram.exceptions import (
@@ -29,6 +29,7 @@ class SendOutcome:
     status: str
     error: str | None = None
     result: Any = None
+    message_ids: list[int] = field(default_factory=list)  # номера отправленных сообщений (для отзыва)
 
     @property
     def ok(self) -> bool:
@@ -116,6 +117,7 @@ async def send_block(
     (VOICE_MESSAGES_FORBIDDEN — общая настройка на голосовые и видеосообщения),
     пробуем донести запасным способом — обычным видео (см. ContentBlock.fallback_factory)."""
     outcome = SendOutcome(SENT)
+    ids: list[int] = []
     for index, factory in enumerate(block.factories(bot, chat_id, user)):
         outcome = await safe_send(factory, chat_id=chat_id, users=users, limiter=limiter)
         if not outcome.ok and index == 0 and is_voice_forbidden(outcome.error):
@@ -126,6 +128,11 @@ async def send_block(
                     chat_id,
                 )
                 outcome = await safe_send(fallback, chat_id=chat_id, users=users, limiter=limiter)
+        message_id = getattr(outcome.result, "message_id", None) if outcome.ok else None
+        if isinstance(message_id, int):
+            ids.append(message_id)
         if not outcome.ok:
+            outcome.message_ids = ids
             return outcome
+    outcome.message_ids = ids
     return outcome

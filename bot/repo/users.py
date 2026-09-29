@@ -129,18 +129,33 @@ class UsersRepo:
         )
 
     async def due_for_auto_delivery(
-        self, now: int, minutes: int, limit: int = 200, ttl: int = 600, since: int = 0
+        self,
+        now: int,
+        minutes: int,
+        limit: int = 200,
+        ttl: int = 600,
+        since: int = 0,
+        only_users: "set[int] | None" = None,
     ) -> list[int]:
         """Кто нажал /start минимум minutes минут назад и так и не получил урок.
 
         since — не трогаем тех, кто пришёл раньше этой отметки (включение фичи на живой базе
         не должно разом выдать урок всем, кто когда-то нажал /start и ушёл)."""
+        params: list = [int(since), int(minutes) * 60, int(now), int(now) - int(ttl)]
+        user_filter = ""
+        if only_users is not None:
+            if not only_users:
+                return []
+            user_filter = f"AND tg_id IN ({','.join('?' for _ in only_users)}) "
+            params.extend(sorted(only_users))
+        params.append(int(limit))
         rows = await self.db.fetchall(
             "SELECT tg_id FROM users WHERE status = 'active' AND material_sent_at IS NULL "
             "AND started_at >= ? AND started_at + ? <= ? "
             "AND (deliver_claim_at IS NULL OR deliver_claim_at <= ?) "
-            "ORDER BY started_at LIMIT ?",
-            (int(since), int(minutes) * 60, int(now), int(now) - int(ttl), int(limit)),
+            + user_filter
+            + "ORDER BY started_at LIMIT ?",
+            params,
         )
         return [r["tg_id"] for r in rows]
 

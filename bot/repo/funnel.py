@@ -184,8 +184,19 @@ class FunnelRepo:
             or 0
         ) > 0
 
-    async def due_steps(self, now: int | None = None, limit: int = 200):
+    async def due_steps(
+        self, now: int | None = None, limit: int = 200, only_users: "set[int] | None" = None
+    ):
+        """only_users — предпрод: отправляем только этим людям (None — всем)."""
         now = int(now if now is not None else time.time())
+        params: list = [now]
+        user_filter = ""
+        if only_users is not None:
+            if not only_users:
+                return []
+            user_filter = f"AND us.user_id IN ({','.join('?' for _ in only_users)}) "
+            params.extend(sorted(only_users))
+        params.append(limit)
         return await self.db.fetchall(
             "SELECT us.id AS queue_id, us.user_id, us.step_id, us.attempts, us.due_at, "
             "fs.text, fs.buttons_json, fs.requires_subscription, fs.on_unsub, fs.position, "
@@ -197,8 +208,9 @@ class FunnelRepo:
             "LEFT JOIN media m ON m.id = fs.media_id "
             "WHERE us.status = 'pending' AND us.due_at <= ? "
             "AND u.status = 'active' AND fs.enabled = 1 "
-            "ORDER BY us.due_at LIMIT ?",
-            (now, limit),
+            + user_filter
+            + "ORDER BY us.due_at LIMIT ?",
+            params,
         )
 
     async def mark_sent(self, queue_id: int) -> None:

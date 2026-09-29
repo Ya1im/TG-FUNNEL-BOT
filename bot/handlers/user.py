@@ -113,6 +113,12 @@ async def cmd_reset(message: Message, deps: Deps) -> None:
     await send_welcome(message.bot, deps, message.chat.id)
 
 
+@router.message(Command("myid"))
+async def cmd_myid(message: Message) -> None:
+    """Числовой ID аккаунта — нужен, чтобы добавить его тестовым в предпроде."""
+    await message.answer(f"Ваш ID: <code>{message.from_user.id}</code>")
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message, deps: Deps) -> None:
     if deps.config.is_admin(message.from_user.id):

@@ -131,6 +131,12 @@ class BroadcastItemEdit(StatesGroup):
     waiting_buttons = State()
 
 
+class PreprodAdd(StatesGroup):
+    """Добавление тестового аккаунта предпрода по ID или пересланному сообщению."""
+
+    waiting_value = State()
+
+
 class ViewerAdd(StatesGroup):
     """Добавление клиента с доступом «только статистика» по ID или пересланному сообщению."""
 

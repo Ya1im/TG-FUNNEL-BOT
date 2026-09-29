@@ -8,7 +8,21 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
-from bot.handlers.admin import access, broadcast, capture, fallback, flow, funnel, material, media, repeat_start, settings, stats
+from bot.handlers.admin import (
+    access,
+    broadcast,
+    capture,
+    fallback,
+    flow,
+    funnel,
+    material,
+    media,
+    preprod,
+    recall,
+    repeat_start,
+    settings,
+    stats,
+)
 from bot.handlers.admin.common import AdminFilter, kb, show
 from bot.handlers.admin.flow import flow_status
 
@@ -40,11 +54,16 @@ async def menu_text(deps) -> str:
         if missing
         else "✅ Воронка настроена — бот готов принимать людей"
     )
+    preprod_line = (
+        "\n🟡 <b>Предпрод включён</b> — посты уходят только тестовым аккаунтам (Воронка → Прогрев → Предпрод)"
+        if await preprod.is_enabled(deps.settings)
+        else ""
+    )
     return (
         "🛠 <b>Админка</b>\n\n"
         f"👥 Людей: {stats_data['total']} "
         f"(активных {stats_data['active']}, заблокировали {stats_data['blocked']})\n\n"
-        f"{verdict}"
+        f"{verdict}{preprod_line}"
     )
 
 
@@ -74,6 +93,8 @@ router.include_router(access.router)
 router.include_router(flow.router)
 router.include_router(media.router)
 router.include_router(funnel.router)
+router.include_router(recall.router)
+router.include_router(preprod.router)
 router.include_router(material.router)
 router.include_router(repeat_start.router)
 router.include_router(settings.router)

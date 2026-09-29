@@ -1498,3 +1498,99 @@ async def test_lc_callback_sends_link_even_if_click_accounting_fails(stack):
     session.requests.clear()
     await feed(dp, bot, callback=make_callback(data))
     assert session.calls("SendMessage")[-1].reply_markup.inline_keyboard[0][0].url == LESSON_URL
+
+
+# --- предпрод и отзыв публикаций ------------------------------------------
+
+
+def _shown(session):
+    return " ".join(getattr(r, "text", "") or "" for r in session.requests)
+
+
+async def test_funnel_screen_has_preprod_and_recall_buttons(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun", user_id=ADMIN_ID))
+    markup = session.calls("EditMessageText")[-1].reply_markup if session.calls("EditMessageText") else session.calls("SendMessage")[-1].reply_markup
+    callbacks = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert "a:pre" in callbacks and "a:rec" in callbacks
+
+
+async def test_myid_command_replies_with_id(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/myid", user_id=USER_ID))
+    assert f"<code>{USER_ID}</code>" in session.calls("SendMessage")[-1].text
+
+
+async def test_admin_preprod_toggle_add_clear_and_schedule(stack):
+    dp, bot, session, deps = stack
+    assert await deps.settings.get("preprod_mode") == "0"
+
+    await feed(dp, bot, callback=make_callback("a:pre:tgl", user_id=ADMIN_ID))   # включить
+    assert await deps.settings.get("preprod_mode") == "1"
+
+    await feed(dp, bot, callback=make_callback("a:pre:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("555", user_id=ADMIN_ID, message_id=80))
+    assert await deps.settings.get("preprod_user_ids") == "555"
+    await feed(dp, bot, callback=make_callback("a:pre:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("не число", user_id=ADMIN_ID, message_id=81))
+    assert await deps.settings.get("preprod_user_ids") == "555"
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:pre:sch", user_id=ADMIN_ID))
+    assert "555" in _shown(session)
+
+    await feed(dp, bot, callback=make_callback("a:pre:clr", user_id=ADMIN_ID))
+    assert await deps.settings.get("preprod_user_ids") == ""
+
+
+async def test_admin_preprod_off_needs_confirmation(stack):
+    dp, bot, session, deps = stack
+    await deps.settings.set("preprod_mode", "1")
+    await feed(dp, bot, callback=make_callback("a:pre:tgl", user_id=ADMIN_ID))     # запрос подтверждения
+    assert await deps.settings.get("preprod_mode") == "1"
+    await feed(dp, bot, callback=make_callback("a:pre:off", user_id=ADMIN_ID))
+    assert await deps.settings.get("preprod_mode") == "0"
+
+
+async def test_admin_menu_shows_preprod_banner(stack):
+    dp, bot, session, deps = stack
+    await deps.settings.set("preprod_mode", "1")
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    assert "Предпрод включён" in session.calls("SendMessage")[-1].text
+
+
+async def test_recall_screens_and_run(stack):
+    dp, bot, session, deps = stack
+    step = await deps.funnel.add_step(60, text="Пуш", backfill=False)
+    await deps.users.upsert(USER_ID, "vasya", "Вася")
+    import time as _t
+
+    now = int(_t.time())
+    await deps.db.execute(
+        "INSERT INTO user_steps(user_id, step_id, due_at, status, sent_at) VALUES(?, ?, ?, 'sent', ?)",
+        (USER_ID, step, now - 60, now - 60),
+    )
+    await deps.sent_log.add(USER_ID, [11, 12], "step", step, now=now - 60)
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:rec", user_id=ADMIN_ID))
+    assert "За какой период" in _shown(session)
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:rec:w:3600", user_id=ADMIN_ID))
+    text = _shown(session)
+    assert "получили публикации: <b>1</b>" in text and "точно (по журналу): 2" in text
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:rec:go:3600", user_id=ADMIN_ID))
+    deleted = session.calls("DeleteMessages")
+    assert deleted and sorted(deleted[0].message_ids) == [11, 12]
+    row = await deps.db.fetchone("SELECT status FROM user_steps WHERE user_id = ?", (USER_ID,))
+    assert row["status"] == "skipped"
+
+
+async def test_recall_window_without_sends_says_nothing_to_recall(stack):
+    dp, bot, session, deps = stack
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:rec:w:900", user_id=ADMIN_ID))
+    assert "ничего не отправлялось" in _shown(session)

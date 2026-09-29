@@ -45,6 +45,7 @@ async def funnel_screen(target, deps) -> None:
             [(f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off}".strip(), f"a:fun:s:{step['id']}")]
         )
     rows.append([("▶️ Прогнать на себе", "a:fun:test")])
+    rows.append([("🧪 Предпрод", "a:pre"), ("🧯 Отозвать отправленное", "a:rec")])
     rows.append([("⬇️ Экспорт", "a:fun:exp"), ("⬆️ Импорт", "a:fun:imp")])
     rows.append([("⬅️ Назад", "a:flow")])
     body = "\n".join(lines) if lines else "Шагов пока нет — жми «➕ Добавить шаг»."
