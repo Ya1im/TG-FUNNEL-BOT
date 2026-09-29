@@ -245,11 +245,16 @@ def parse_buttons(raw: str) -> list[dict]:
     for line in (raw or "").splitlines():
         if "|" not in line:
             continue
-        parts = [p.strip() for p in line.split("|")]
-        text, url = parts[0], parts[1]
+        text, _, rest = line.partition("|")
+        text, url, track = text.strip(), rest.strip(), False
+        head, sep, tail = url.rpartition("|")
+        flag = tail.strip().lower()
+        if sep and not any(ch in flag for ch in "/:."):
+            # последнее поле — слово-признак («клик»), а не кусок ссылки; неизвестные признаки игнорируем
+            url, track = head.strip(), flag == "клик"
         if text and url.startswith("http"):
             button = {"text": text, "url": url}
-            if len(parts) > 2 and parts[2].lower() == "клик":
+            if track:
                 button["track"] = True
             buttons.append(button)
     return buttons

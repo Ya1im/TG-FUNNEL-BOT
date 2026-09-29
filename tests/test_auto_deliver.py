@@ -227,3 +227,74 @@ async def test_auto_delivery_one_failure_does_not_stop_others(db, config, monkey
     assert await auto_deliver_due(bot, deps, now=T0 + 3600) == 1
     delivered = [u for u in (1, 2) if (await deps.users.get(u))["material_sent_at"] is not None]
     assert len(delivered) == 1
+
+
+async def test_auto_delivery_ignores_users_who_started_before_feature(db, config):
+    """Включение на живой базе не должно разом выдать урок всем, кто когда-то нажал /start."""
+    from bot.services import init_auto_delivery
+
+    deps = await make_deps(db, config)
+    await add_user(deps, 1, started_at=T0 - 30 * 86400)    # старый /start
+    await init_auto_delivery(deps, now=T0)
+    await add_user(deps, 2, started_at=T0 + 10)            # пришёл после включения
+    bot = FakeBot()
+    assert await auto_deliver_due(bot, deps, now=T0 + 10 + 3600) == 1
+    assert (await deps.users.get(1))["material_sent_at"] is None
+    assert (await deps.users.get(2))["material_sent_at"] is not None
+
+
+async def test_init_auto_delivery_runs_once(db, config):
+    from bot.services import init_auto_delivery
+
+    deps = await make_deps(db, config)
+    await init_auto_delivery(deps, now=100)
+    await init_auto_delivery(deps, now=999)
+    assert await deps.settings.get_int("auto_deliver_since") == 100
+
+
+async def test_blocked_user_gets_no_material_mark_and_no_queue(db, config):
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    deps = await make_deps(db, config)
+    await add_user(deps)
+
+    class BlockedBot(FakeBot):
+        async def send_message(self, chat_id, text, reply_markup=None):
+            raise TelegramForbiddenError(method=SendMessage(chat_id=1, text="x"), message="bot was blocked by the user")
+
+    assert await auto_deliver_due(BlockedBot(), deps, now=T0 + 3600) == 0
+    user = await deps.users.get(1)
+    assert user["status"] == "blocked"
+    assert user["material_sent_at"] is None
+    assert user["deliver_claim_at"] is None
+    assert await deps.funnel.pending_count(1) == 0
+
+
+async def test_invite_sent_after_subscription_to_auto_delivered_user(db, config):
+    deps = await make_deps(db, config, subscribed=False)
+    await deps.settings.set("private_channel_id", "-1009999999999")
+    await add_user(deps)
+    bot = FakeBot()
+    await auto_deliver_due(bot, deps, now=T0 + 3600)             # без ссылки: человек не подписан
+    assert not [c for c in bot.calls if c[0] == "invite"]
+    deps.gate = FakeGate(True)
+
+    assert await check_subscription_flow(bot, deps, 1, 1) is True
+    assert len([c for c in bot.calls if c[0] == "invite"]) == 1   # награда за подписку дошла
+    assert await check_subscription_flow(bot, deps, 1, 1) is True
+    assert len([c for c in bot.calls if c[0] == "invite"]) == 1   # повторно не шлём
+    assert texts(bot).count("Урок") == 1
+
+
+async def test_reset_restarts_auto_delivery_clock(db, config):
+    """После /reset админ проходит воронку заново: урок «по таймеру» отсчитывается от сброса, а не от старого /start."""
+    deps = await make_deps(db, config)
+    await add_user(deps, 1, started_at=T0 - 10**6)
+    await deps.users.reset(1)
+    started = (await deps.users.get(1))["started_at"]
+    assert started > T0
+    bot = FakeBot()
+    assert await auto_deliver_due(bot, deps, now=started + 60) == 0
+    assert await auto_deliver_due(bot, deps, now=started + 3600) == 1
+    assert (await deps.users.get(1))["invite_sent_at"] is None

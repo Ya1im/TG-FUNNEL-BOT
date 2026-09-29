@@ -68,6 +68,12 @@ class Database:
         ):
             if not await self._has_column(table, column):
                 await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        if not await self._has_column("users", "invite_sent_at"):
+            await self.conn.execute("ALTER TABLE users ADD COLUMN invite_sent_at INTEGER")
+            # Кто получил материал раньше — ссылку в закрытый канал получил тогда же
+            await self.conn.execute(
+                "UPDATE users SET invite_sent_at = material_sent_at WHERE material_sent_at IS NOT NULL"
+            )
         if not await self._has_column("broadcasts", "sub_mode"):
             await self.conn.execute(
                 "ALTER TABLE broadcasts ADD COLUMN sub_mode TEXT NOT NULL DEFAULT 'off'"

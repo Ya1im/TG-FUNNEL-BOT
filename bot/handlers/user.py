@@ -72,7 +72,6 @@ async def cb_lesson_click(call: CallbackQuery, deps: Deps) -> None:
         await call.answer("Ссылка устарела. Напишите /start", show_alert=True)
         return
     await call.answer()
-    await record_click(deps, call.from_user.id)
     text = await deps.settings.get("lesson_link_text")
     kb = link_kb(await deps.settings.get("lesson_link_btn"), url)
     chat_id = call.message.chat.id
@@ -81,6 +80,10 @@ async def cb_lesson_click(call: CallbackQuery, deps: Deps) -> None:
         return await call.bot.send_message(chat_id, text, reply_markup=kb)
 
     await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
+    try:
+        await record_click(deps, call.from_user.id)
+    except Exception:  # noqa: BLE001 — человек уже получил ссылку, сбой учёта не должен его беспокоить
+        log.exception("Не смог засчитать клик пользователя %s", call.from_user.id)
 
 
 async def _sync_admin_commands(message: Message, deps: Deps) -> None:

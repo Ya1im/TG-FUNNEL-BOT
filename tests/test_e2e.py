@@ -1473,3 +1473,28 @@ async def test_admin_edits_auto_deliver_minutes(stack):
     await feed(dp, bot, callback=make_callback("a:set:t:auto_deliver_minutes", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("30", user_id=ADMIN_ID, message_id=70))
     assert await deps.settings.get_int("auto_deliver_minutes") == 30
+
+
+async def test_funnel_test_run_resets_previous_click(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш", stop_on_click=True)
+    await deps.users.upsert(ADMIN_ID, "adm", "Адм")
+    await deps.db.execute("UPDATE users SET lesson_clicked_at = 5 WHERE tg_id = ?", (ADMIN_ID,))
+    await feed(dp, bot, callback=make_callback("a:fun:test", user_id=ADMIN_ID))
+    assert (await deps.users.get(ADMIN_ID))["lesson_clicked_at"] is None
+    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 1
+
+
+async def test_lc_callback_sends_link_even_if_click_accounting_fails(stack):
+    import importlib
+
+    dp, bot, session, deps = stack
+    _, data = await _tracked_step(deps)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db is down")
+
+    importlib.import_module("bot.handlers.user").record_click = boom
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(data))
+    assert session.calls("SendMessage")[-1].reply_markup.inline_keyboard[0][0].url == LESSON_URL

@@ -251,3 +251,28 @@ async def test_deliver_hook_failure_does_not_break_tick(db):
     scheduler.deliver_hook = hook
     stats = await scheduler.tick()
     assert stats["sent"] == 1
+
+
+async def test_row_skipped_after_batch_fetch_is_not_sent(db):
+    """Пачка выбрана заранее; клик мог пропустить шаг, пока тик отправлял предыдущие."""
+    scheduler, bot, users, funnel = await build(db, now=1000)
+    await funnel.add_step(0, text="Пуш", backfill=False)
+    await funnel.enqueue(1, now=0)
+    rows = await funnel.due_steps(1000)
+    await funnel.finish(rows[0]["queue_id"], "skipped", "клик по уроку")
+    stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
+    await scheduler._process(rows[0], stats, set())
+    assert bot.sent == []
+    status = await db.fetchval("SELECT status FROM user_steps WHERE id = ?", (rows[0]["queue_id"],))
+    assert status == "skipped"     # mark_sent не перезаписал статус
+
+
+async def test_row_shifted_after_batch_fetch_is_not_sent(db):
+    scheduler, bot, users, funnel = await build(db, now=1000)
+    await funnel.add_step(0, text="Пуш", backfill=False)
+    await funnel.enqueue(1, now=0)
+    rows = await funnel.due_steps(1000)
+    await db.execute("UPDATE user_steps SET due_at = 5000 WHERE id = ?", (rows[0]["queue_id"],))
+    stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
+    await scheduler._process(rows[0], stats, set())
+    assert bot.sent == []

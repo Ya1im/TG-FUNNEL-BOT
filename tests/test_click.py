@@ -173,11 +173,12 @@ async def test_find_tracked_url(db):
     assert await find_tracked_url(deps, "deadbeefdeadbeef") is None
 
 
-async def test_find_tracked_url_ignores_plain_buttons(db):
+async def test_find_tracked_url_survives_removed_track_flag(db):
+    """Админ убрал «| клик», но старые сообщения с callback-кнопкой ещё живы — ссылка не должна умереть."""
     funnel, material = FunnelRepo(db), MaterialRepo(db)
     await funnel.add_step(60, text="п", buttons=[{"text": "Урок", "url": URL}])
     deps = SimpleNamespace(funnel=funnel, material=material)
-    assert await find_tracked_url(deps, button_hash(URL)) is None
+    assert await find_tracked_url(deps, button_hash(URL)) == URL
 
 
 async def test_block_from_row_track_flag(db):
@@ -186,3 +187,73 @@ async def test_block_from_row_track_flag(db):
     row = (await funnel.list_steps())[0]
     assert block_from_row(row).keyboard().inline_keyboard[0][0].url == URL
     assert block_from_row(row, track=True).keyboard().inline_keyboard[0][0].callback_data.startswith("lc:")
+
+
+async def test_click_reapplied_when_it_happened_before_queue_was_built(db):
+    """Кнопка уходит в материале раньше, чем строится очередь: клик в этом окне не должен потеряться."""
+    from types import SimpleNamespace as NS
+
+    from bot.services import deliver_material
+
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1, "u", "В")
+    await funnel.add_step(1800, text="П", stop_on_click=True)
+    await funnel.add_step(3600, text="Призыв", after_click_seconds=3600)
+    await users.mark_lesson_clicked(1, 5000)   # клик успел раньше enqueue
+    from bot.repo.settings import SettingsRepo
+    from bot.sender import RateLimiter
+
+    class Bot:
+        async def send_message(self, *a, **k):
+            return "m"
+
+    deps = NS(users=users, funnel=funnel, material=MaterialRepo(db), settings=SettingsRepo(db), limiter=RateLimiter(0))
+    assert await deliver_material(Bot(), deps, 1) is True
+    q = await queue(db)
+    statuses = sorted(r["status"] for r in q.values())
+    assert statuses == ["pending", "skipped"]
+
+
+async def test_backfill_skips_stop_on_click_step_for_clicked_users(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1, "u", "В")
+    await users.upsert(2, "u", "Г")
+    for uid in (1, 2):
+        await db.execute("UPDATE users SET material_sent_at = ? WHERE tg_id = ?", (T0, uid))
+    await users.mark_lesson_clicked(1, T0 + 5)
+    push = await funnel.add_step(60, text="пуш", stop_on_click=True)   # backfill внутри add_step
+    plain = await funnel.add_step(60, text="обычный")
+    rows = await db.fetchall("SELECT user_id, step_id FROM user_steps ORDER BY user_id, step_id")
+    assert {(r["user_id"], r["step_id"]) for r in rows} == {(1, plain), (2, push), (2, plain)}
+
+
+async def test_apply_click_never_moves_later_steps_before_anchor(db):
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1, "u", "В")
+    anchor = await funnel.add_step(5000, text="призыв", after_click_seconds=3600)
+    early_tail = await funnel.add_step(1000, text="хвост с малой задержкой")  # порядок расходится с задержками
+    await db.execute("UPDATE users SET material_sent_at = ? WHERE tg_id = 1", (T0,))
+    await funnel.enqueue(1, now=T0)
+    await record_click(SimpleNamespace(users=users, funnel=funnel), 1, now=T0 + 10)
+    q = await queue(db)
+    assert q[early_tail]["due_at"] >= q[anchor]["due_at"]
+
+
+async def test_failed_apply_click_rolls_back_click_mark(db, monkeypatch):
+    import pytest as _pytest
+
+    deps, *_ = await build(db)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(deps.funnel, "apply_click", boom)
+    with _pytest.raises(RuntimeError):
+        await record_click(deps, 1, now=T0 + 5)
+    assert (await deps.users.get(1))["lesson_clicked_at"] is None   # следующий клик попробует снова
+
+
+async def test_enqueue_repeat_does_not_reset_fast_flag(db):
+    deps, *_ = await build(db, fast=True)
+    assert await deps.funnel.enqueue(1, now=T0) == 0     # повтор ничего не создал
+    assert (await deps.users.get(1))["funnel_fast"] == 1

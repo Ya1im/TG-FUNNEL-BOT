@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramAPIError
 from bot.content import ContentBlock, apply_placeholders, button_hash
 from bot.keyboards import link_kb, subscribe_kb
 from bot.repo.funnel import block_from_row
-from bot.sender import safe_send, send_block
+from bot.sender import BLOCKED, safe_send, send_block
 
 log = logging.getLogger(__name__)
 
@@ -85,36 +85,57 @@ async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = Non
         await send_menu(bot, deps, chat_id)
 
 
-async def deliver_material(bot, deps, chat_id: int, send_invite: bool = True) -> None:
+async def send_private_invite(bot, deps, chat_id: int) -> bool:
+    """Личная ссылка в закрытый канал (награда за подписку). True — ссылка ушла."""
+    invite = await build_invite_link(bot, deps, chat_id)
+    if not invite:
+        return False
+    text = await deps.settings.get("private_text")
+    kb = link_kb(await deps.settings.get("btn_private"), invite)
+
+    async def action():
+        return await bot.send_message(chat_id, text, reply_markup=kb)
+
+    await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
+    await deps.users.mark_invite_sent(chat_id)
+    return True
+
+
+async def deliver_material(bot, deps, chat_id: int, send_invite: bool = True) -> bool:
     """Материал + персональная ссылка в закрытый канал + запуск прогрева.
 
-    send_invite=False — без личной ссылки в закрытый канал (автовыдача неподписчику)."""
+    send_invite=False — без личной ссылки в закрытый канал (автовыдача неподписчику).
+    False — человек заблокировал бота, урок не выдан и воронка не запущена."""
     user = await deps.users.get(chat_id)
 
     intro = (await deps.settings.get("material_intro")).strip()
     if intro:
-        await send_block(
+        outcome = await send_block(
             ContentBlock(text=intro), bot, chat_id, user=user, users=deps.users, limiter=deps.limiter
         )
+        if outcome.status == BLOCKED:
+            return False
 
     for row in await deps.material.list_blocks(only_enabled=True):
         block = block_from_row(row, track=True)
         if block.is_empty:
             continue
-        await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
+        outcome = await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
+        if outcome.status == BLOCKED:
+            return False
 
-    invite = await build_invite_link(bot, deps, chat_id) if send_invite else None
-    if invite:
-        text = await deps.settings.get("private_text")
-        kb = link_kb(await deps.settings.get("btn_private"), invite)
-
-        async def action():
-            return await bot.send_message(chat_id, text, reply_markup=kb)
-
-        await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
+    if send_invite:
+        await send_private_invite(bot, deps, chat_id)
 
     await deps.users.mark_material_sent(chat_id)
     await deps.funnel.enqueue(chat_id)
+    # Клик мог случиться раньше, чем очередь построилась (кнопка уходит в материале) — применяем его сейчас
+    user = await deps.users.get(chat_id)
+    if user and user["lesson_clicked_at"]:
+        await deps.funnel.apply_click(
+            chat_id, int(user["lesson_clicked_at"]), fast=bool(user["funnel_fast"])
+        )
+    return True
 
 
 async def deliver_material_once(
@@ -127,11 +148,21 @@ async def deliver_material_once(
     if not await deps.users.claim_delivery(chat_id, now):
         return False
     try:
-        await deliver_material(bot, deps, chat_id, send_invite=send_invite)
+        delivered = await deliver_material(bot, deps, chat_id, send_invite=send_invite)
     except Exception:
         await deps.users.release_claim(chat_id)
         raise
-    return True
+    if not delivered:
+        await deps.users.release_claim(chat_id)
+    return delivered
+
+
+async def init_auto_delivery(deps, now: int | None = None) -> None:
+    """Один раз при первом запуске новой версии: запоминаем «с какого момента» автовыдача действует,
+    чтобы она не накрыла разом всех, кто нажал /start до её появления."""
+    if (await deps.settings.get("auto_deliver_since")).strip():
+        return
+    await deps.settings.set("auto_deliver_since", str(int(now if now is not None else time.time())))
 
 
 async def auto_deliver_due(bot, deps, now: int | None = None) -> int:
@@ -141,7 +172,8 @@ async def auto_deliver_due(bot, deps, now: int | None = None) -> int:
         return 0
     now = int(now if now is not None else time.time())
     delivered = 0
-    for user_id in await deps.users.due_for_auto_delivery(now, minutes):
+    since = await deps.settings.get_int("auto_deliver_since") or 0
+    for user_id in await deps.users.due_for_auto_delivery(now, minutes, since=since):
         try:
             state = await deps.gate.status(user_id, cached_seconds=300)
             if await deliver_material_once(bot, deps, user_id, send_invite=(state == "yes"), now=now):
@@ -178,6 +210,9 @@ async def check_subscription_flow(bot, deps, user_id: int, chat_id: int) -> bool
         user = await deps.users.get(user_id)
         if not (user and user["material_sent_at"]):
             await deliver_material_once(bot, deps, chat_id)
+        elif not user["invite_sent_at"]:
+            # урок выдан автоматически (без личной ссылки), а человек подписался — ссылка положена ему
+            await send_private_invite(bot, deps, chat_id)
         return True
     return False
 
@@ -195,7 +230,8 @@ async def find_tracked_url(deps, digest: str) -> str | None:
             continue
         for btn in buttons:
             url = btn.get("url") or ""
-            if btn.get("track") and url and button_hash(url) == digest:
+            # признак track не проверяем: админ мог убрать «| клик», а старые сообщения ещё живы
+            if url and button_hash(url) == digest:
                 return url
     return None
 
@@ -209,5 +245,9 @@ async def record_click(deps, user_id: int, now: int | None = None) -> bool:
     if not await deps.users.mark_lesson_clicked(user_id, now):
         return False
     user = await deps.users.get(user_id)
-    await deps.funnel.apply_click(user_id, now, fast=bool(user["funnel_fast"]))
+    try:
+        await deps.funnel.apply_click(user_id, now, fast=bool(user["funnel_fast"]))
+    except Exception:
+        await deps.users.clear_click(user_id)  # чтобы следующий клик попробовал ещё раз
+        raise
     return True

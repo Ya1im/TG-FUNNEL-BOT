@@ -58,13 +58,17 @@ class FunnelRepo:
     async def backfill_step(self, step_id: int, position: int, delay_seconds: int) -> int:
         """Ставит уже существующим активным пользователям только что созданный/включённый шаг —
         по их личной дате получения материала, минуя тех, кто уже получил более поздний шаг."""
+        step = await self.get_step(step_id)
+        stop_on_click = int(step["stop_on_click"]) if step is not None else 0
         cur = await self.db.conn.execute(
             "INSERT OR IGNORE INTO user_steps(user_id, step_id, due_at, status) "
             "SELECT u.tg_id, ?, u.material_sent_at + ?, 'pending' FROM users u "
             "WHERE u.material_sent_at IS NOT NULL AND u.status = 'active' "
+            # пуш «отменяется после клика» тем, кто уже кликнул, ставить незачем
+            "AND (? = 0 OR u.lesson_clicked_at IS NULL) "
             "AND NOT EXISTS (SELECT 1 FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
             "WHERE us.user_id = u.tg_id AND fs.position > ? AND us.status = 'sent')",
-            (step_id, int(delay_seconds), int(position)),
+            (step_id, int(delay_seconds), stop_on_click, int(position)),
         )
         await self.db.conn.commit()
         return cur.rowcount or 0
@@ -129,9 +133,11 @@ class FunnelRepo:
                 (user_id, step["id"], now + delay),
             )
             created += cur.rowcount or 0
-        await self.db.conn.execute(
-            "UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id)
-        )
+        if fast or created:
+            # обычный enqueue, который ничего не добавил (повтор), не сбрасывает тестовый режим
+            await self.db.conn.execute(
+                "UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id)
+            )
         await self.db.conn.commit()
         return created
 
@@ -156,12 +162,27 @@ class FunnelRepo:
         if anchor_idx is not None:
             anchor = rest[anchor_idx]
             after = FAST_STEP_SECONDS if fast else int(anchor["after_click_seconds"])
-            delta = int(click_at) + after - int(anchor["due_at"])
+            anchor_due = int(click_at) + after
+            delta = anchor_due - int(anchor["due_at"])
             for r in rest[anchor_idx:]:
+                # ниже якоря не уходим: шаг после призыва не должен прийти раньше него
                 await conn.execute(
-                    "UPDATE user_steps SET due_at = due_at + ? WHERE id = ?", (delta, r["uid"])
+                    "UPDATE user_steps SET due_at = ? WHERE id = ?",
+                    (max(int(r["due_at"]) + delta, anchor_due), r["uid"]),
                 )
         await conn.commit()
+
+    async def still_due(self, queue_id: int, now: int | None = None) -> bool:
+        """Строку могли пропустить или сдвинуть (клик) уже после выборки пачки в тике."""
+        now = int(now if now is not None else time.time())
+        return (
+            await self.db.fetchval(
+                "SELECT COUNT(*) FROM user_steps WHERE id = ? AND status = 'pending' AND due_at <= ?",
+                (queue_id, now),
+                default=0,
+            )
+            or 0
+        ) > 0
 
     async def due_steps(self, now: int | None = None, limit: int = 200):
         now = int(now if now is not None else time.time())

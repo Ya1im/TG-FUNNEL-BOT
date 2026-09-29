@@ -91,6 +91,15 @@ class UsersRepo:
             (now, now, tg_id),
         )
 
+    async def mark_invite_sent(self, tg_id: int) -> None:
+        await self.db.execute(
+            "UPDATE users SET invite_sent_at = COALESCE(invite_sent_at, ?) WHERE tg_id = ?",
+            (int(time.time()), tg_id),
+        )
+
+    async def clear_click(self, tg_id: int) -> None:
+        await self.db.execute("UPDATE users SET lesson_clicked_at = NULL WHERE tg_id = ?", (tg_id,))
+
     async def mark_lesson_clicked(self, tg_id: int, now: int) -> bool:
         """Фиксирует ПЕРВЫЙ клик по уроку. True — этот вызов записал время (повтор — False)."""
         cur = await self.db.conn.execute(
@@ -120,14 +129,18 @@ class UsersRepo:
         )
 
     async def due_for_auto_delivery(
-        self, now: int, minutes: int, limit: int = 200, ttl: int = 600
+        self, now: int, minutes: int, limit: int = 200, ttl: int = 600, since: int = 0
     ) -> list[int]:
-        """Кто нажал /start минимум minutes минут назад и так и не получил урок."""
+        """Кто нажал /start минимум minutes минут назад и так и не получил урок.
+
+        since — не трогаем тех, кто пришёл раньше этой отметки (включение фичи на живой базе
+        не должно разом выдать урок всем, кто когда-то нажал /start и ушёл)."""
         rows = await self.db.fetchall(
             "SELECT tg_id FROM users WHERE status = 'active' AND material_sent_at IS NULL "
-            "AND started_at + ? <= ? AND (deliver_claim_at IS NULL OR deliver_claim_at <= ?) "
+            "AND started_at >= ? AND started_at + ? <= ? "
+            "AND (deliver_claim_at IS NULL OR deliver_claim_at <= ?) "
             "ORDER BY started_at LIMIT ?",
-            (int(minutes) * 60, int(now), int(now) - int(ttl), int(limit)),
+            (int(since), int(minutes) * 60, int(now), int(now) - int(ttl), int(limit)),
         )
         return [r["tg_id"] for r in rows]
 
@@ -136,8 +149,9 @@ class UsersRepo:
         await self.db.execute(
             "UPDATE users SET material_sent_at = NULL, funnel_started_at = NULL, "
             "is_subscribed = 0, sub_checked_at = NULL, status = 'active', "
-            "lesson_clicked_at = NULL, deliver_claim_at = NULL, funnel_fast = 0 WHERE tg_id = ?",
-            (tg_id,),
+            "lesson_clicked_at = NULL, deliver_claim_at = NULL, funnel_fast = 0, "
+            "invite_sent_at = NULL, started_at = ? WHERE tg_id = ?",
+            (int(time.time()), tg_id),
         )
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
 

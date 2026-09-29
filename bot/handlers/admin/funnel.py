@@ -394,6 +394,7 @@ async def cb_funnel_test(call: CallbackQuery, deps) -> None:
     user_id = call.from_user.id
     await deps.users.upsert(user_id, call.from_user.username, call.from_user.first_name)
     await deps.funnel.clear_user(user_id)
+    await deps.users.clear_click(user_id)  # иначе ветвление сработало бы только в первый прогон
     count = await deps.funnel.enqueue(user_id, fast=True)
     await call.answer()
     await call.message.answer(

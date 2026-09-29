@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS users (
     funnel_started_at INTEGER,
     lesson_clicked_at INTEGER,          -- первый клик по кнопке урока (NULL — не было)
     deliver_claim_at  INTEGER,          -- защита от двойной выдачи урока
-    funnel_fast       INTEGER NOT NULL DEFAULT 0  -- воронка поставлена в быстром тестовом режиме
+    funnel_fast       INTEGER NOT NULL DEFAULT 0, -- воронка поставлена в быстром тестовом режиме
+    invite_sent_at    INTEGER                     -- когда ушла личная ссылка в закрытый канал
 );
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_users_source ON users(source);

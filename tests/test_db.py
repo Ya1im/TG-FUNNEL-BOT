@@ -143,3 +143,30 @@ async def test_old_database_gets_click_columns(tmp_path):
         await db.apply_schema()  # повторный запуск ничего не ломает
     finally:
         await db.close()
+
+
+async def test_old_users_get_invite_sent_at_from_material_sent_at(tmp_path):
+    import sqlite3
+
+    from bot.db import Database
+
+    path = tmp_path / "old_invite.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE users (
+            tg_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
+            started_at INTEGER NOT NULL, source TEXT, status TEXT NOT NULL DEFAULT 'active',
+            is_subscribed INTEGER NOT NULL DEFAULT 0, sub_checked_at INTEGER,
+            material_sent_at INTEGER, funnel_started_at INTEGER);
+        INSERT INTO users(tg_id, started_at, material_sent_at) VALUES (1, 0, 777), (2, 0, NULL);
+        """
+    )
+    con.commit()
+    con.close()
+    db = await Database(path).connect()
+    try:
+        rows = await db.fetchall("SELECT tg_id, invite_sent_at FROM users ORDER BY tg_id")
+        assert [(r["tg_id"], r["invite_sent_at"]) for r in rows] == [(1, 777), (2, None)]
+    finally:
+        await db.close()

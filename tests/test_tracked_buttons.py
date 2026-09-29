@@ -50,3 +50,9 @@ def test_button_hash_is_stable_and_short():
     assert button_hash(URL) == button_hash(URL)
     assert len(button_hash(URL)) == 16
     assert button_hash(URL) != button_hash(URL + "x")
+
+
+def test_parse_buttons_flag_word_never_leaks_into_url():
+    assert parse_buttons(f"Урок | {URL} | клик") == [{"text": "Урок", "url": URL, "track": True}]
+    assert parse_buttons(f"Урок | {URL}|клик") == [{"text": "Урок", "url": URL, "track": True}]
+    assert parse_buttons(f"Урок | {URL} | ") == [{"text": "Урок", "url": URL}]

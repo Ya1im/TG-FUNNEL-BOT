@@ -100,6 +100,9 @@ class Scheduler:
         user_id = row["user_id"]
         queue_id = row["queue_id"]
 
+        if not await self.funnel.still_due(queue_id, int(self.now())):
+            return  # пока ждали очереди, шаг пропустили или сдвинули (клик по уроку)
+
         if row["requires_subscription"]:
             state = await self.gate.status(user_id, cached_seconds=GATE_CACHE_SECONDS)
             if state == "error":
