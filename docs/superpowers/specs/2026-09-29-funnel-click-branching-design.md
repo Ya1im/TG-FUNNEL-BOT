@@ -82,6 +82,7 @@
 |---|---|---|
 | `users` | `lesson_clicked_at INTEGER` | время **первого** клика (NULL — не было) |
 | `users` | `deliver_claim_at INTEGER` | защита автовыдачи (§3.1) |
+| `users` | `funnel_fast INTEGER NOT NULL DEFAULT 0` | воронка поставлена в быстром тестовом режиме |
 | `funnel_steps` | `stop_on_click INTEGER NOT NULL DEFAULT 0` | пуш отменяется после клика |
 | `funnel_steps` | `after_click_seconds INTEGER` | у «первого призыва»: через сколько после клика слать |
 
@@ -101,8 +102,8 @@
 отменены; клик после пуша №5, до призыва — призыв в клик+1ч (может сдвинуть и вперёд, и назад);
 клик после призыва — сдвигов нет; клика нет — цепочка идёт по накопленным сдвигам.
 
-Быстрый тестовый режим: `enqueue(fast=True)` (10 с × номер шага) — «после клика» в этом режиме
-`FAST_STEP_SECONDS` (10 с). `users.reset()` обнуляет `lesson_clicked_at` и `deliver_claim_at`.
+Быстрый тестовый режим: `enqueue(fast=True)` (10 с × номер шага) ставит `users.funnel_fast=1`; «после клика» в этом режиме —
+`FAST_STEP_SECONDS` (10 с). `users.reset()` обнуляет `lesson_clicked_at`, `deliver_claim_at`, `funnel_fast`.
 Не подписанный пользователь: клик доступен только тем, кто получил урок, ветвление на него распространяется так же.
 
 ### 3.4 Админка
