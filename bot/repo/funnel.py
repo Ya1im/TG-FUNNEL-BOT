@@ -267,6 +267,14 @@ class FunnelRepo:
             f"ORDER BY fs.position, fs.id"
         )
 
+    async def get_step_row(self, step_id: int):
+        """Шаг вместе с данными медиа первого сообщения (для step_messages)."""
+        return await self.db.fetchone(
+            "SELECT fs.*, m.slug AS media_slug, m.kind AS media_kind, m.file_id AS media_file_id "
+            "FROM funnel_steps fs LEFT JOIN media m ON m.id = fs.media_id WHERE fs.id = ?",
+            (step_id,),
+        )
+
     async def delete_step(self, step_id: int) -> None:
         affected = await self._users_with_pending(step_id)
         await self.db.execute("DELETE FROM user_steps WHERE step_id = ?", (step_id,))

@@ -7,19 +7,23 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from bot.repo.funnel import block_from_row, human_delay, parse_delay
+from bot.repo.funnel import block_from_item, blocks_from_row, human_delay, parse_delay, step_messages
 from bot.sender import send_block
 from bot.handlers.admin.common import (
     FunnelAdd,
     FunnelEditContent,
     FunnelEditDelay,
     FunnelImport,
+    FunnelMsgAdd,
+    FunnelMsgEdit,
+    MenuRef,
     buttons_hint,
     capture_content,
     item_label,
     kb,
     parse_buttons,
     preview,
+    safe_excerpt,
     screen_text,
     show,
 )
@@ -36,9 +40,11 @@ async def funnel_screen(target, deps) -> None:
     for index, step in enumerate(steps, start=1):
         mark = "🔒" if step["requires_subscription"] else ""
         off = "" if step["enabled"] else "⏸"
+        count = len(step_messages(step))
+        many = f" · 📨{count}" if count > 1 else ""
         lines.append(
             f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off} "
-            f"{item_label(step['text'], step['media_kind'], 30)}"
+            f"{item_label(step['text'], step['media_kind'], 30)}{many}"
         )
         rows.append(
             [(f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off}".strip(), f"a:fun:s:{step['id']}")]
@@ -69,11 +75,22 @@ async def cb_step(call: CallbackQuery, deps) -> None:
 
 
 async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
-    steps = {s["id"]: s for s in await deps.funnel.list_steps()}
-    step = steps.get(step_id)
+    step = await deps.funnel.get_step_row(step_id)
     if step is None:
         await show(target, "Шаг не найден.", kb([[("⬅️ К прогреву", "a:fun")]]))
         return
+    messages = step_messages(step)
+    if len(messages) == 1:
+        content = (
+            f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
+            f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
+            f"Текст:\n{step['text'] or '<i>без текста</i>'}"
+        )
+    else:
+        content = f"📨 Сообщений в шаге: {len(messages)}\n\n" + "\n".join(
+            f"{i}. {item_label(m['text'], m['media_kind'], 40)}" + (f" · 🔘{len(m['buttons'])}" if m["buttons"] else "")
+            for i, m in enumerate(messages, start=1)
+        )
     text = (
         f"🔥 <b>Шаг прогрева</b>\n\n"
         f"⏱ Через: {human_delay(step['delay_seconds'])} после предыдущего поста\n"
@@ -85,9 +102,7 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
             else ""
         )
         + "\n"
-        f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
-        f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
-        f"Текст:\n{step['text'] or '<i>без текста</i>'}"
+        + content
     )
     if more:
         markup = kb(
@@ -103,7 +118,7 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
     else:
         markup = kb(
             [
-                [("✏️ Текст/медиа", f"a:fun:ed:{step_id}"), ("🔘 Кнопки", f"a:fun:btn:{step_id}")],
+                [(f"📨 Сообщения ({len(messages)})", f"a:fun:msgs:{step_id}")],
                 [("⏱ Задержка", f"a:fun:delay:{step_id}"), ("👁 Показать", f"a:fun:prev:{step_id}")],
                 [("⋯ Ещё", f"a:fun:more:{step_id}")],
                 [("⬅️ К прогреву", "a:fun")],
@@ -121,10 +136,10 @@ async def cb_step_more(call: CallbackQuery, deps) -> None:
 @router.callback_query(F.data.startswith("a:fun:prev:"))
 async def cb_step_preview(call: CallbackQuery, deps) -> None:
     step_id = int(call.data.split(":")[-1])
-    steps = {s["id"]: s for s in await deps.funnel.list_steps()}
-    step = steps.get(step_id)
+    step = await deps.funnel.get_step_row(step_id)
     if step:
-        await send_block(block_from_row(step), call.bot, call.message.chat.id, user=call.from_user)
+        for block in blocks_from_row(step):
+            await send_block(block, call.bot, call.message.chat.id, user=call.from_user)
     await call.answer()
 
 
@@ -293,41 +308,323 @@ async def on_add_delay(message: Message, state: FSMContext) -> None:
     if seconds is None:
         await message.answer("Не понял. Напиши как <code>2ч</code>, <code>30м</code> или <code>3д</code>.")
         return
-    await state.update_data(delay=seconds)
-    await state.set_state(FunnelAdd.waiting_content)
-    await message.answer(
-        f"Задержка: {human_delay(seconds)}.\n\n"
-        "Теперь пришли сам контент одним сообщением — текст, фото с подписью, видео, кружок или файл."
+    sent = await message.answer(
+        _collect_text("➕ <b>Новый шаг прогрева</b>", f"Задержка: {human_delay(seconds)}.", 0),
+        reply_markup=_collect_markup("a:fun:adone", "a:fun"),
     )
+    await state.update_data(
+        delay=seconds, messages=[], _menu_chat_id=sent.chat.id, _menu_message_id=sent.message_id
+    )
+    await state.set_state(FunnelAdd.collecting)
 
 
-@router.message(FunnelAdd.waiting_content)
-async def on_add_content(message: Message, state: FSMContext, deps) -> None:
+def _collect_text(title: str, intro: str, count: int, added_label: str = "Добавлено сообщений") -> str:
+    counter = (
+        f"{added_label}: {count}\n\nШли ещё или жми «✅ Готово»."
+        if count
+        else "Шли сообщения — текст, фото, видео, кружок, файл, аудио, голосовое, гифку или стикер. "
+        "Можно несколько подряд, они уйдут одно за другим."
+    )
+    return f"{title}\n\n{intro}\n\n{counter}\n\nКнопки-ссылки повесишь после — у каждого сообщения свои."
+
+
+def _collect_markup(done_data: str, cancel_data: str | None = None):
+    rows = [[("✅ Готово", done_data)]]
+    if cancel_data:
+        rows.append([("✖️ Отмена", cancel_data)])
+    return kb(rows)
+
+
+async def _item_from_message(deps, message: Message) -> dict | None:
+    """Сообщение админа → пункт шага (текст, медиа, кнопки — как в рассылке). None — если пусто."""
     text, media_id = await capture_content(deps, message, "step")
     if not text and not media_id:
-        await message.answer("Пустое сообщение. Пришли текст или файл.")
+        return None
+    media_kind = file_id = None
+    if media_id:
+        media_row = await deps.media.get(media_id)
+        if media_row:
+            media_kind, file_id = media_row["kind"], media_row["file_id"]
+    return {"text": text, "media_kind": media_kind, "file_id": file_id, "buttons": [], "media_id": media_id}
+
+
+async def _refresh_counter(message: Message, state: FSMContext, text: str, markup) -> None:
+    """Счётчик правим в одном и том же сообщении, чтобы чат не зарастал одинаковыми уведомлениями."""
+    data = await state.get_data()
+    chat_id, message_id = data.get("_menu_chat_id"), data.get("_menu_message_id")
+    ref = MenuRef(message.bot, chat_id, message_id) if chat_id and message_id else None
+    result = await show(ref or message, text, markup)
+    if ref is None and result is not None:
+        await state.update_data(_menu_chat_id=result.chat.id, _menu_message_id=result.message_id)
+
+
+_EMPTY_HINT = (
+    "Такой тип сообщения не поддерживается. Пришли текст, фото, видео, кружок, файл, "
+    "аудио, голосовое, гифку или стикер."
+)
+
+
+@router.message(FunnelAdd.collecting)
+async def on_add_collect(message: Message, state: FSMContext, deps) -> None:
+    item = await _item_from_message(deps, message)
+    if item is None:
+        await message.answer(_EMPTY_HINT)
         return
-    await state.update_data(text=text, media_id=media_id)
-    await state.set_state(FunnelAdd.waiting_buttons)
-    await message.answer(
-        "Нужны кнопки-ссылки? Пришли построчно в формате\n"
-        "<code>Текст кнопки | https://ссылка</code>\n\n"
-        "Если кнопки не нужны — отправь <code>-</code>"
+    data = await state.get_data()
+    messages = data.get("messages", [])
+    messages.append(item)
+    await state.update_data(messages=messages)
+    await _refresh_counter(
+        message, state,
+        _collect_text("➕ <b>Новый шаг прогрева</b>", f"Задержка: {human_delay(data['delay'])}.", len(messages)),
+        _collect_markup("a:fun:adone", "a:fun"),
     )
 
 
-@router.message(FunnelAdd.waiting_buttons, F.text)
-async def on_add_buttons(message: Message, state: FSMContext, deps) -> None:
-    buttons = [] if message.text.strip() == "-" else parse_buttons(message.text)
+@router.callback_query(F.data == "a:fun:adone")
+async def cb_add_done(call: CallbackQuery, state: FSMContext, deps) -> None:
     data = await state.get_data()
-    await deps.funnel.add_step(
+    messages = data.get("messages") or []
+    if not messages or "delay" not in data:
+        await call.answer("Сначала пришли хотя бы одно сообщение", show_alert=True)
+        return
+    first, rest = messages[0], messages[1:]
+    step_id = await deps.funnel.add_step(
         delay_seconds=data["delay"],
-        text=data.get("text"),
-        media_id=data.get("media_id"),
-        buttons=buttons,
+        text=first.get("text"),
+        media_id=first.get("media_id"),
+        extra_messages=rest,
     )
     await state.clear()
-    await funnel_screen(message, deps)
+    await messages_screen(call, deps, step_id, note="Шаг создан. Кнопки-ссылки повесь на нужные сообщения.")
+    await call.answer()
+
+
+# --- сообщения шага ---------------------------------------------------------
+
+
+async def messages_screen(target, deps, step_id: int, note: str = "") -> None:
+    step = await deps.funnel.get_step_row(step_id)
+    if step is None:
+        await show(target, "Шаг не найден.", kb([[("⬅️ К прогреву", "a:fun")]]))
+        return
+    rows, lines = [], []
+    for idx, item in enumerate(step_messages(step)):
+        n_buttons = len(item["buttons"])
+        hint = f" · 🔘{n_buttons}" if n_buttons else ""
+        lines.append(f"{idx + 1}. {item_label(item['text'], item['media_kind'])}{hint}")
+        rows.append([(f"{idx + 1}. {item_label(item['text'], item['media_kind'], 24)}{hint}", f"a:fun:m:{step_id}:{idx}")])
+    rows.append([("➕ Добавить сообщение", f"a:fun:madd:{step_id}")])
+    rows.append([("👁 Показать всё", f"a:fun:prev:{step_id}")])
+    rows.append([("⬅️ К шагу", f"a:fun:s:{step_id}")])
+    hint = "Сообщения уходят подряд, с паузой около секунды. Кнопки у каждого свои."
+    body = "\n".join(lines)
+    await show(
+        target,
+        screen_text("📨 Сообщения шага", (note + " " if note else "") + hint, body),
+        kb(rows),
+    )
+
+
+async def message_screen(target, deps, step_id: int, idx: int) -> None:
+    step = await deps.funnel.get_step_row(step_id)
+    messages = step_messages(step) if step else []
+    if not (0 <= idx < len(messages)):
+        await show(target, "Сообщение не найдено.", kb([[("⬅️ К списку", f"a:fun:msgs:{step_id}")]]))
+        return
+    item = messages[idx]
+    text = (
+        f"📨 <b>Сообщение #{idx + 1}</b> из {len(messages)}\n\n"
+        f"🎬 Медиа: {item['media_kind'] or 'нет'}\n"
+        f"🔘 Кнопки: {', '.join(b.get('text', '') for b in item['buttons']) or 'нет'}\n\n"
+        f"Текст:\n{safe_excerpt(item['text']) or '<i>без текста</i>'}"
+    )
+    await show(
+        target,
+        text,
+        kb(
+            [
+                [("👁 Показать", f"a:fun:mp:{step_id}:{idx}")],
+                [("✏️ Текст/медиа", f"a:fun:me:{step_id}:{idx}"), ("🔘 Кнопки", f"a:fun:mb:{step_id}:{idx}")],
+                [("⬆️ Выше", f"a:fun:mu:{step_id}:{idx}"), ("⬇️ Ниже", f"a:fun:md:{step_id}:{idx}")],
+                [("🗑 Удалить", f"a:fun:mx:{step_id}:{idx}")],
+                [("⬅️ К списку", f"a:fun:msgs:{step_id}")],
+            ]
+        ),
+    )
+
+
+def _ids(call: CallbackQuery) -> tuple[int, int]:
+    parts = call.data.split(":")
+    return int(parts[-2]), int(parts[-1])
+
+
+async def _load_messages(deps, step_id: int) -> list[dict] | None:
+    step = await deps.funnel.get_step_row(step_id)
+    return step_messages(step) if step else None
+
+
+@router.callback_query(F.data.startswith("a:fun:msgs:"))
+async def cb_messages(call: CallbackQuery, deps, state: FSMContext) -> None:
+    await state.clear()
+    await messages_screen(call, deps, int(call.data.split(":")[-1]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:fun:m:"))
+async def cb_message(call: CallbackQuery, deps, state: FSMContext) -> None:
+    await state.clear()
+    step_id, idx = _ids(call)
+    await message_screen(call, deps, step_id, idx)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:fun:mp:"))
+async def cb_message_preview(call: CallbackQuery, deps) -> None:
+    step_id, idx = _ids(call)
+    messages = await _load_messages(deps, step_id)
+    if not messages or not (0 <= idx < len(messages)):
+        await call.answer("Сообщение не найдено", show_alert=True)
+        return
+    await send_block(block_from_item(messages[idx]), call.bot, call.message.chat.id, user=call.from_user)
+    await call.answer("Это увидят люди")
+
+
+async def _move_message(call: CallbackQuery, deps, direction: int) -> None:
+    step_id, idx = _ids(call)
+    messages = await _load_messages(deps, step_id)
+    new_idx = idx + direction
+    if messages and 0 <= idx < len(messages) and 0 <= new_idx < len(messages):
+        messages[idx], messages[new_idx] = messages[new_idx], messages[idx]
+        await deps.funnel.set_messages(step_id, messages)
+    await call.answer()
+    await messages_screen(call, deps, step_id)
+
+
+@router.callback_query(F.data.startswith("a:fun:mu:"))
+async def cb_message_up(call: CallbackQuery, deps) -> None:
+    await _move_message(call, deps, -1)
+
+
+@router.callback_query(F.data.startswith("a:fun:md:"))
+async def cb_message_down(call: CallbackQuery, deps) -> None:
+    await _move_message(call, deps, 1)
+
+
+@router.callback_query(F.data.startswith("a:fun:mx:"))
+async def cb_message_delete(call: CallbackQuery, deps) -> None:
+    step_id, idx = _ids(call)
+    messages = await _load_messages(deps, step_id)
+    if messages is None:
+        await call.answer("Шаг не найден", show_alert=True)
+        return
+    if len(messages) <= 1:
+        await call.answer("В шаге должно остаться хотя бы одно сообщение — удали сам шаг", show_alert=True)
+        return
+    if 0 <= idx < len(messages):
+        messages.pop(idx)
+        await deps.funnel.set_messages(step_id, messages)
+    await call.answer("Удалил")
+    await messages_screen(call, deps, step_id)
+
+
+@router.callback_query(F.data.startswith("a:fun:me:"))
+async def cb_message_edit(call: CallbackQuery, state: FSMContext) -> None:
+    step_id, idx = _ids(call)
+    await state.update_data(msg_step_id=step_id, msg_idx=idx)
+    await state.set_state(FunnelMsgEdit.waiting_content)
+    await show(
+        call,
+        "✏️ <b>Новое содержимое сообщения</b>\n\nПришли одним сообщением — заменит и текст, и медиа целиком. "
+        "Кнопки этого сообщения останутся.",
+        kb([[("⬅️ Отмена", f"a:fun:m:{step_id}:{idx}")]]),
+    )
+    await call.answer()
+
+
+@router.message(FunnelMsgEdit.waiting_content)
+async def on_message_edit_content(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    step_id, idx = data.get("msg_step_id"), data.get("msg_idx")
+    messages = await _load_messages(deps, step_id) if step_id is not None else None
+    if not messages or idx is None or not (0 <= idx < len(messages)):
+        await state.clear()
+        return
+    item = await _item_from_message(deps, message)
+    if item is None:
+        await message.answer("Пустое сообщение. Пришли текст или файл.")
+        return
+    item["buttons"] = messages[idx]["buttons"]
+    messages[idx] = item
+    await deps.funnel.set_messages(step_id, messages)
+    await state.clear()
+    await message_screen(message, deps, step_id, idx)
+
+
+@router.callback_query(F.data.startswith("a:fun:mb:"))
+async def cb_message_buttons(call: CallbackQuery, state: FSMContext) -> None:
+    step_id, idx = _ids(call)
+    await state.update_data(msg_step_id=step_id, msg_idx=idx)
+    await state.set_state(FunnelMsgEdit.waiting_buttons)
+    await show(
+        call,
+        "🔘 <b>Кнопки сообщения</b>\n\nПришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы убрать все кнопки — отправь <code>-</code>",
+        kb([[("⬅️ Отмена", f"a:fun:m:{step_id}:{idx}")]]),
+    )
+    await call.answer()
+
+
+@router.message(FunnelMsgEdit.waiting_buttons, F.text)
+async def on_message_buttons(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    step_id, idx = data.get("msg_step_id"), data.get("msg_idx")
+    messages = await _load_messages(deps, step_id) if step_id is not None else None
+    if not messages or idx is None or not (0 <= idx < len(messages)):
+        await state.clear()
+        return
+    messages[idx]["buttons"] = [] if message.text.strip() == "-" else parse_buttons(message.text)
+    await deps.funnel.set_messages(step_id, messages)
+    await state.clear()
+    await message_screen(message, deps, step_id, idx)
+
+
+@router.callback_query(F.data.startswith("a:fun:madd:"))
+async def cb_message_add(call: CallbackQuery, deps, state: FSMContext) -> None:
+    step_id = int(call.data.split(":")[-1])
+    await state.set_state(FunnelMsgAdd.collecting)
+    await state.update_data(
+        msg_step_id=step_id, added=0, _menu_chat_id=call.message.chat.id, _menu_message_id=call.message.message_id
+    )
+    await show(
+        call,
+        _collect_text("📨 <b>Новые сообщения шага</b>", "", 0),
+        _collect_markup(f"a:fun:msgs:{step_id}"),
+    )
+    await call.answer()
+
+
+@router.message(FunnelMsgAdd.collecting)
+async def on_message_add(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    step_id = data.get("msg_step_id")
+    messages = await _load_messages(deps, step_id) if step_id is not None else None
+    if messages is None:
+        await state.clear()
+        return
+    item = await _item_from_message(deps, message)
+    if item is None:
+        await message.answer(_EMPTY_HINT)
+        return
+    messages.append(item)
+    await deps.funnel.set_messages(step_id, messages)  # сохраняем сразу — черновика нет
+    added = int(data.get("added", 0)) + 1
+    await state.update_data(added=added)
+    await _refresh_counter(
+        message, state,
+        _collect_text("📨 <b>Новые сообщения шага</b>", "", added, "Добавлено в шаг"),
+        _collect_markup(f"a:fun:msgs:{step_id}"),
+    )
 
 
 # --- экспорт, импорт -------------------------------------

@@ -64,6 +64,18 @@ class MediaAdd(StatesGroup):
 
 class FunnelAdd(StatesGroup):
     waiting_delay = State()
+    collecting = State()
+
+
+class FunnelMsgAdd(StatesGroup):
+    """Добавление сообщений в уже существующий шаг прогрева."""
+
+    collecting = State()
+
+
+class FunnelMsgEdit(StatesGroup):
+    """Правка одного сообщения шага — содержимое или кнопки."""
+
     waiting_content = State()
     waiting_buttons = State()
 

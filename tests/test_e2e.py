@@ -230,18 +230,135 @@ async def test_admin_uploads_media_through_dialog(stack):
 
 
 async def test_admin_builds_funnel_step(stack):
+    """Шаг из нескольких сообщений: задержка → сообщения подряд (текст, фото) → «Готово»."""
+    from bot.repo.funnel import step_messages
+
     dp, bot, session, deps = stack
     await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
     await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("2ч", user_id=ADMIN_ID, message_id=30))
     await feed(dp, bot, message=make_message("Текст прогрева", user_id=ADMIN_ID, message_id=31))
-    await feed(dp, bot, message=make_message("Канал | https://t.me/x", user_id=ADMIN_ID, message_id=32))
+    await feed(dp, bot, message=make_photo_message("PHOTO1", 32))
+    await feed(dp, bot, message=make_message("Третье сообщение", user_id=ADMIN_ID, message_id=33))
+    await feed(dp, bot, callback=make_callback("a:fun:adone", user_id=ADMIN_ID))
 
     steps = await deps.funnel.list_steps()
     assert len(steps) == 1
     assert steps[0]["delay_seconds"] == 7200
     assert steps[0]["text"] == "Текст прогрева"
-    assert "Канал" in steps[0]["buttons_json"]
+    msgs = step_messages(steps[0])
+    assert [m["media_kind"] for m in msgs] == [None, "photo", None]
+    assert msgs[1]["file_id"] == "PHOTO1" and msgs[2]["text"] == "Третье сообщение"
+    assert await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_state() is None
+
+
+async def test_admin_cannot_finish_step_without_messages(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=30))
+    await feed(dp, bot, callback=make_callback("a:fun:adone", user_id=ADMIN_ID))
+    assert await deps.funnel.list_steps() == []
+
+
+async def _three_message_step(deps):
+    return await deps.funnel.add_step(
+        3600, text="Первое", backfill=False,
+        extra_messages=[
+            {"text": "Второе", "media_kind": None, "file_id": None, "buttons": []},
+            {"text": "Третье", "media_kind": None, "file_id": None, "buttons": []},
+        ],
+    )
+
+
+async def _messages(deps, step_id):
+    from bot.repo.funnel import step_messages
+
+    row = next(s for s in await deps.funnel.list_steps() if s["id"] == step_id)
+    return step_messages(row)
+
+
+async def test_admin_step_buttons_are_per_message(stack):
+    dp, bot, session, deps = stack
+    step_id = await _three_message_step(deps)
+    await feed(dp, bot, callback=make_callback(f"a:fun:mb:{step_id}:1", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Канал | https://t.me/x", user_id=ADMIN_ID, message_id=70))
+    msgs = await _messages(deps, step_id)
+    assert [len(m["buttons"]) for m in msgs] == [0, 1, 0]
+    assert msgs[1]["buttons"][0] == {"text": "Канал", "url": "https://t.me/x"}
+    # кнопки первого сообщения живут в прежней колонке шага
+    await feed(dp, bot, callback=make_callback(f"a:fun:mb:{step_id}:0", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Урок | https://t.me/y", user_id=ADMIN_ID, message_id=71))
+    assert "Урок" in (await deps.funnel.get_step(step_id))["buttons_json"]
+    await feed(dp, bot, callback=make_callback(f"a:fun:mb:{step_id}:1", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=72))
+    assert [len(m["buttons"]) for m in await _messages(deps, step_id)] == [1, 0, 0]
+
+
+async def test_admin_edits_one_message_of_step_keeping_its_buttons(stack):
+    dp, bot, session, deps = stack
+    step_id = await _three_message_step(deps)
+    await feed(dp, bot, callback=make_callback(f"a:fun:mb:{step_id}:2", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Кн | https://t.me/z", user_id=ADMIN_ID, message_id=73))
+    await feed(dp, bot, callback=make_callback(f"a:fun:me:{step_id}:2", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_photo_message("NEWPH", 74))
+    msgs = await _messages(deps, step_id)
+    assert [m["text"] for m in msgs[:2]] == ["Первое", "Второе"]
+    assert msgs[2]["media_kind"] == "photo" and msgs[2]["file_id"] == "NEWPH"
+    assert msgs[2]["buttons"][0]["text"] == "Кн"          # правка содержимого кнопки не трогает
+
+
+async def test_admin_adds_messages_to_existing_step(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(3600, text="Единственное", backfill=False)
+    await feed(dp, bot, callback=make_callback(f"a:fun:madd:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("Добавленное 1", user_id=ADMIN_ID, message_id=75))
+    await feed(dp, bot, message=make_photo_message("PH2", 76))
+    await feed(dp, bot, callback=make_callback(f"a:fun:msgs:{step_id}", user_id=ADMIN_ID))
+    msgs = await _messages(deps, step_id)
+    assert [m["text"] for m in msgs] == ["Единственное", "Добавленное 1", None]
+    assert msgs[2]["file_id"] == "PH2"
+    assert await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_state() is None
+
+
+async def test_admin_reorders_and_deletes_step_messages(stack):
+    dp, bot, session, deps = stack
+    step_id = await _three_message_step(deps)
+    await feed(dp, bot, callback=make_callback(f"a:fun:mu:{step_id}:2", user_id=ADMIN_ID))
+    assert [m["text"] for m in await _messages(deps, step_id)] == ["Первое", "Третье", "Второе"]
+    await feed(dp, bot, callback=make_callback(f"a:fun:mu:{step_id}:1", user_id=ADMIN_ID))   # на первое место
+    assert [m["text"] for m in await _messages(deps, step_id)] == ["Третье", "Первое", "Второе"]
+    assert (await deps.funnel.get_step(step_id))["text"] == "Третье"          # колонка шага следует за порядком
+    await feed(dp, bot, callback=make_callback(f"a:fun:md:{step_id}:0", user_id=ADMIN_ID))
+    assert [m["text"] for m in await _messages(deps, step_id)] == ["Первое", "Третье", "Второе"]
+    await feed(dp, bot, callback=make_callback(f"a:fun:mx:{step_id}:0", user_id=ADMIN_ID))
+    assert [m["text"] for m in await _messages(deps, step_id)] == ["Третье", "Второе"]
+    await feed(dp, bot, callback=make_callback(f"a:fun:mx:{step_id}:0", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback(f"a:fun:mx:{step_id}:0", user_id=ADMIN_ID))   # последнее не удаляется
+    assert [m["text"] for m in await _messages(deps, step_id)] == ["Второе"]
+
+
+async def test_admin_step_preview_sends_every_message(stack):
+    dp, bot, session, deps = stack
+    step_id = await _three_message_step(deps)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:prev:{step_id}", user_id=ADMIN_ID))
+    assert [m.text for m in session.calls("SendMessage")] == ["Первое", "Второе", "Третье"]
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:mp:{step_id}:1", user_id=ADMIN_ID))
+    assert [m.text for m in session.calls("SendMessage")] == ["Второе"]
+
+
+async def test_step_card_and_list_show_message_count(stack):
+    dp, bot, session, deps = stack
+    step_id = await _three_message_step(deps)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:s:{step_id}", user_id=ADMIN_ID))
+    edit = session.calls("EditMessageText")[-1]
+    labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
+    assert "📨 Сообщения (3)" in labels
+    assert "Второе" in edit.text and "Третье" in edit.text
+    await feed(dp, bot, callback=make_callback("a:fun", user_id=ADMIN_ID))
+    assert "📨3" in session.calls("EditMessageText")[-1].text
 
 
 async def test_admin_edits_funnel_step_content_and_buttons(stack):
