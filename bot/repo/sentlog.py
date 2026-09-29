@@ -30,8 +30,13 @@ class SentLogRepo:
             (int(since),),
         )
 
-    async def delete_since(self, since: int) -> None:
-        await self.db.execute("DELETE FROM sent_messages WHERE sent_at >= ?", (int(since),))
+    async def delete_since(self, since: int, keep_users=()) -> None:
+        keep = list(keep_users)
+        marks = ",".join("?" for _ in keep)
+        await self.db.execute(
+            "DELETE FROM sent_messages WHERE sent_at >= ?" + (f" AND user_id NOT IN ({marks})" if keep else ""),
+            (int(since), *keep),
+        )
 
     async def purge_older_than(self, before: int) -> None:
         """Telegram всё равно не даёт удалять сообщения старше 48 часов — журнал не копим."""

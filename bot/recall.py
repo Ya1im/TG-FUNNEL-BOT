@@ -11,7 +11,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
+import asyncio
+
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
 from bot.content import ContentBlock
 
@@ -19,7 +21,8 @@ log = logging.getLogger(__name__)
 
 CHUNK = 100                      # deleteMessages принимает до 100 номеров за раз
 MAX_AGE_SECONDS = 48 * 3600      # старше Telegram удалять не даёт
-PROBE_TEXT = "⁠"            # невидимый символ: служебное сообщение почти не заметно
+PROBE_TEXT = "\u2800"           # braille-пробел: Telegram принимает его как непустое, но человек почти не видит
+PROBE_FALLBACK = "·"
 
 
 @dataclass
@@ -82,6 +85,7 @@ async def _acquire(deps) -> None:
 
 
 async def _delete(bot, deps, chat_id: int, ids: list[int]) -> None:
+    """Удалить пачками по 100. «Сообщение не найдено» — уже удалено человеком, это не ошибка."""
     for start in range(0, len(ids), CHUNK):
         chunk = ids[start : start + CHUNK]
         for attempt in range(3):
@@ -90,9 +94,21 @@ async def _delete(bot, deps, chat_id: int, ids: list[int]) -> None:
                 await bot.delete_messages(chat_id, chunk)
                 break
             except TelegramRetryAfter as exc:
-                import asyncio
-
+                if attempt == 2:
+                    raise
                 await asyncio.sleep(exc.retry_after + 0.5)
+            except TelegramBadRequest as exc:
+                log.info("Пачка сообщений у %s уже удалена или недоступна: %s", chat_id, exc)
+                break
+
+
+async def _probe(bot, deps, chat_id: int):
+    await _acquire(deps)
+    try:
+        return await bot.send_message(chat_id, PROBE_TEXT, disable_notification=True)
+    except TelegramBadRequest:
+        await _acquire(deps)
+        return await bot.send_message(chat_id, PROBE_FALLBACK, disable_notification=True)
 
 
 async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: int | None = None) -> dict[str, int]:
@@ -100,6 +116,7 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
     now = int(now if now is not None else time.time())
     since = max(int(since), now - MAX_AGE_SECONDS)
     plan = await build_plan(deps, since)
+    failed_users: set[int] = set()
     result = {"users": 0, "exact": 0, "ranged": 0, "blocked": 0, "failed": 0, "cancelled": 0}
     for user_id, user_plan in plan.users.items():
         try:
@@ -107,8 +124,7 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
                 await _delete(bot, deps, user_id, sorted(set(user_plan.exact_ids)))
                 result["exact"] += len(user_plan.exact_ids)
             if user_plan.legacy_messages:
-                await _acquire(deps)
-                probe = await bot.send_message(user_id, PROBE_TEXT, disable_notification=True)
+                probe = await _probe(bot, deps, user_id)
                 last = probe.message_id
                 first = max(1, last - user_plan.legacy_messages)
                 await _delete(bot, deps, user_id, list(range(first, last + 1)))
@@ -118,14 +134,18 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
             result["blocked"] += 1
         except TelegramAPIError as exc:
             log.warning("Не смог отозвать сообщения у %s: %s", user_id, exc)
+            failed_users.add(user_id)
             result["failed"] += 1
-    # Отозванные шаги считаем не доставленными; журнал за период больше не нужен
+    # Отозванные шаги считаем не доставленными. У тех, у кого удалить не вышло, оставляем и шаги,
+    # и журнал — чтобы повторный отзыв мог попробовать ещё раз.
+    keep = sorted(failed_users)
+    marks = ",".join("?" for _ in keep)
     await deps.db.execute(
         "UPDATE user_steps SET status = 'skipped', last_error = 'отозвано' "
-        "WHERE status = 'sent' AND sent_at >= ?",
-        (since,),
+        "WHERE status = 'sent' AND sent_at >= ?" + (f" AND user_id NOT IN ({marks})" if keep else ""),
+        (since, *keep),
     )
-    await deps.sent_log.delete_since(since)
+    await deps.sent_log.delete_since(since, keep_users=keep)
     if cancel_pending:
         cur = await deps.db.conn.execute(
             "UPDATE user_steps SET status = 'skipped', last_error = 'отозвано' "
