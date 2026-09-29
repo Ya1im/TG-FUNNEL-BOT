@@ -28,10 +28,11 @@ class UsersRepo:
         Админ — тестер, а не реальный пользователь: он не должен попадать
         ни в один счётчик и ни в один сегмент рассылки.
         """
+        role_admins = "tg_id NOT IN (SELECT tg_id FROM viewers WHERE role = 'admin')"
         if not self.admin_ids:
-            return "1=1", ()
+            return role_admins, ()
         placeholders = ",".join("?" for _ in self.admin_ids)
-        return f"tg_id NOT IN ({placeholders})", tuple(self.admin_ids)
+        return f"tg_id NOT IN ({placeholders}) AND {role_admins}", tuple(self.admin_ids)
 
     async def upsert(
         self,

@@ -1,6 +1,7 @@
 """Панель тестового прогона: кто тестировщик и как выглядит ход воронки у него."""
 from __future__ import annotations
 
+import html
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +13,10 @@ MSK = timezone(timedelta(hours=3))
 
 async def is_tester(deps, user_id: int) -> bool:
     return user_id in await tester_ids(deps.settings, deps.config.admin_ids, deps.db)
+
+
+def _reason(text, default: str) -> str:
+    return html.escape(str(text or default)[:80])
 
 
 def _msk(ts: int) -> str:
@@ -45,9 +50,9 @@ async def panel_text(deps, user_id: int, now: int | None = None) -> str:
         if status == "sent":
             lines.append(f"✅ {index} · {delay} · отправлен {_msk(r['sent_at'])}")
         elif status == "skipped":
-            lines.append(f"⏭ {index} · пропущен ({r['last_error'] or 'пропущен'})")
+            lines.append(f"⏭ {index} · пропущен ({_reason(r['last_error'], 'пропущен')})")
         elif status == "failed":
-            lines.append(f"❌ {index} · не отправился ({r['last_error'] or 'ошибка'})")
+            lines.append(f"❌ {index} · не отправился ({_reason(r['last_error'], 'ошибка')})")
         elif status == "pending" and r["due_at"] < NOT_SCHEDULED and not head_marked:
             head_marked = True
             left = max(0, int(r["due_at"]) - now)

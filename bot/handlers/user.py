@@ -96,6 +96,8 @@ async def _sync_admin_commands(message: Message, deps: Deps) -> None:
     if is_owner or is_role_admin:
         commands.append(BotCommand(command="admin", description="Админка"))
     commands.append(BotCommand(command="test", description="Тестовый прогон воронки"))
+    if is_role_admin:
+        commands.append(BotCommand(command="stats", description="Статистика бота"))
     if is_owner:
         commands.append(BotCommand(command="reset", description="Сбросить своё прохождение"))
     try:

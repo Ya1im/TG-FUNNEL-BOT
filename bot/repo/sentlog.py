@@ -24,8 +24,10 @@ class SentLogRepo:
         await self.db.conn.commit()
 
     async def has(self, user_id: int, kind: str, ref_id: int) -> bool:
+        """Было ли такое сообщение в текущем прохождении (после последнего сброса /reset, «Начать заново»)."""
         return bool(await self.db.fetchval(
-            "SELECT COUNT(*) FROM sent_messages WHERE user_id = ? AND kind = ? AND ref_id = ?",
+            "SELECT COUNT(*) FROM sent_messages sm LEFT JOIN users u ON u.tg_id = sm.user_id "
+            "WHERE sm.user_id = ? AND sm.kind = ? AND sm.ref_id = ? AND sm.sent_at >= COALESCE(u.started_at, 0)",
             (user_id, kind, ref_id), default=0))
 
     async def since(self, since: int):

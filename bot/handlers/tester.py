@@ -25,7 +25,10 @@ PANEL_KB_ROWS = [
 
 
 async def _screen(target, deps: Deps, user_id: int) -> None:
-    await show(target, await panel_text(deps, user_id), kb(PANEL_KB_ROWS))
+    rows = list(PANEL_KB_ROWS)
+    if deps.config.is_admin(user_id) or await deps.access.role(user_id) == "admin":
+        rows.append([("⬅️ Меню админки", "a:menu")])
+    await show(target, await panel_text(deps, user_id), kb(rows))
 
 
 async def _guard(call: CallbackQuery, deps: Deps) -> bool:
@@ -43,11 +46,19 @@ async def cmd_test(message: Message, deps: Deps, state: FSMContext) -> None:
     await _screen(message, deps, message.from_user.id)
 
 
-@router.callback_query(F.data.in_({"t:open", "t:ref"}))
+@router.callback_query(F.data == "t:open")
 async def cb_open(call: CallbackQuery, deps: Deps, state: FSMContext) -> None:
     if not await _guard(call, deps):
         return
     await state.clear()
+    await _screen(call, deps, call.from_user.id)
+    await call.answer()
+
+
+@router.callback_query(F.data == "t:ref")
+async def cb_refresh(call: CallbackQuery, deps: Deps) -> None:
+    if not await _guard(call, deps):
+        return
     await _screen(call, deps, call.from_user.id)
     await call.answer()
 
@@ -97,6 +108,8 @@ async def cb_speed(call: CallbackQuery, deps: Deps) -> None:
     if not await _guard(call, deps):
         return
     fast = call.data == "t:fast"
+    user = call.from_user
+    await deps.users.upsert(user.id, user.username, user.first_name)   # у владельца без /start строки может не быть
     await deps.funnel.set_fast(call.from_user.id, fast)
     await call.answer("Ускоренно: 10 секунд между постами" if fast else "Реальное время")
     await _screen(call, deps, call.from_user.id)

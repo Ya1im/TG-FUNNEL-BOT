@@ -30,7 +30,9 @@ async def test_dispatcher_builds_with_all_routers(db, config):
     bot = Bot(FAKE_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     deps = Deps.build(config, db, bot)
     dp = fresh_dispatcher(deps)
-    names = {r.name for r in dp.sub_routers[0].sub_routers[0].sub_routers}
+    admin = next(r for r in dp.sub_routers[0].sub_routers if r.name == "admin")
+    names = {r.name for r in admin.sub_routers}
+    assert "tester" in {r.name for r in dp.sub_routers[0].sub_routers}
     assert {"admin-media", "admin-funnel", "admin-material", "admin-settings",
             "admin-stats", "admin-broadcast"} <= names
     await bot.session.close()

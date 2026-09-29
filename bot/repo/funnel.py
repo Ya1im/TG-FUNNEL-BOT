@@ -7,7 +7,7 @@ import time
 from bot.content import ContentBlock
 from bot.db import Database
 
-FAST_STEP_SECONDS = 10  # «прогнать на себе»: задержки по 10 секунд
+FAST_STEP_SECONDS = 10  # ускоренный тестовый режим: 10 секунд между постами
 # Срок у шага, до которого очередь ещё не дошла: срок появляется, когда закрыт предыдущий шаг
 NOT_SCHEDULED = 9_000_000_000
 _CHUNK = 400
@@ -211,7 +211,8 @@ class FunnelRepo:
     async def has_fast_pending(self) -> bool:
         return bool(await self.db.fetchval(
             "SELECT 1 FROM user_steps us JOIN users u ON u.tg_id = us.user_id "
-            "WHERE us.status = 'pending' AND u.funnel_fast = 1 LIMIT 1", default=0))
+            "JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.status = 'pending' AND fs.enabled = 1 AND u.funnel_fast = 1 LIMIT 1", default=0))
 
     async def rebase_overdue_heads(self, now: int | None = None) -> int:
         """Выпуск в продакшен/старт после простоя: просроченные головные шаги — на «сейчас + задержка»."""
@@ -271,7 +272,7 @@ class FunnelRepo:
 
     # --- очередь ----------------------------------------------------------
 
-    async def enqueue(self, user_id: int, fast: bool = False, now: int | None = None) -> int:
+    async def enqueue(self, user_id: int, fast: bool | None = None, now: int | None = None) -> int:
         """Поставить пользователю все включённые шаги. Повтор не плодит дубли.
         Срок получает только первый шаг — «сейчас + его задержка»; остальные — по цепочке."""
         now = int(now if now is not None else time.time())
@@ -284,8 +285,8 @@ class FunnelRepo:
                 (user_id, step["id"], NOT_SCHEDULED),
             )
             created += cur.rowcount or 0
-        if fast or created:
-            # обычный enqueue, который ничего не добавил (повтор), не сбрасывает тестовый режим
+        if fast is not None:
+            # флаг режима трогаем только по явной просьбе: обычная выдача урока сохраняет выбранный тестовый режим
             await self.db.conn.execute(
                 "UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id)
             )

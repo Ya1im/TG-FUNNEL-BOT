@@ -1599,3 +1599,34 @@ async def test_admin_role_can_manage_testers_but_not_release(stack):
     assert (await deps.settings.get("preprod_mode")) == "1"
     await feed(dp, bot, callback=make_callback("a:pre:off", user_id=ADMIN_ID))
     assert (await deps.settings.get("preprod_mode")) == "0"
+
+
+async def test_test_command_works_in_the_middle_of_admin_dialog(stack):
+    """Владелец пишет /test, пока бот ждёт контент шага — команда не должна уйти в диалог текстом."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=20))
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/test", user_id=ADMIN_ID, message_id=21))
+    assert "Тестовый прогон" in _texts(session)
+    assert await deps.funnel.list_steps() == []
+
+
+async def test_fast_mode_survives_lesson_delivery_and_needs_no_prior_start(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш")
+    await feed(dp, bot, callback=make_callback("t:fast", user_id=ADMIN_ID))     # строки users ещё нет
+    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 1
+    await feed(dp, bot, callback=make_callback("t:lesson", user_id=ADMIN_ID))
+    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 1
+    due = await deps.db.fetchval("SELECT due_at FROM user_steps WHERE user_id = ?", (ADMIN_ID,))
+    assert due - (await deps.users.get(ADMIN_ID))["material_sent_at"] <= 15
+
+
+async def test_role_admin_test_account_is_not_in_stats_or_segments(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(600, "Клиент", None, role="admin")
+    await deps.users.upsert(600, "c", "Клиент")
+    await deps.db.execute("UPDATE users SET material_sent_at = 5 WHERE tg_id = 600")
+    assert (await deps.users.stats())["total"] == 0
+    assert await deps.users.segment_ids("all") == []

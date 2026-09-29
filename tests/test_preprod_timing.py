@@ -111,6 +111,7 @@ async def test_note_sent_once_even_after_postponed_attempt(db):
     """Шаг с подпиской: до отправки поста были попытки (attempts>0), пометка всё равно должна прийти — один раз."""
     users, funnel, ids = await setup(db)
     await db.execute("UPDATE user_steps SET attempts = 2")
+    await db.execute("UPDATE users SET started_at = 0")
     bot, log = Bot(), SentLogRepo(db)
     sched = Scheduler(bot=bot, users=users, funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
                       sent_log=log, now=lambda: 5000)
@@ -131,3 +132,17 @@ async def test_tester_ids_include_owners_role_admins_and_listed(db):
     assert await allowed_user_ids(settings, (99,), db) is None                 # предпрод выключен
     await settings.set("preprod_mode", "1")
     assert await allowed_user_ids(settings, (99,), db) == {7, 8, 99, 50}
+
+
+async def test_note_comes_again_after_restart_of_the_run(db):
+    """«Начать заново»: журнал прошлого прохождения не должен глушить пометки в новом."""
+    users, funnel, ids = await setup(db)
+    await db.execute("UPDATE users SET started_at = 0")
+    log = SentLogRepo(db)
+    await log.add(1, [1, 2], "step", ids[0], now=100)
+    sched = Scheduler(bot=Bot(), users=users, funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      sent_log=log, now=lambda: 5000)
+    row = (await funnel.due_steps(5000))[0]
+    assert await sched._note_already_sent(row) is True
+    await db.execute("UPDATE users SET started_at = 1000")            # сброс прохождения
+    assert await sched._note_already_sent(row) is False

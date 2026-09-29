@@ -52,6 +52,7 @@ class Scheduler:
         self.tick_seconds = tick_seconds
         self.heal_every_ticks = heal_every_ticks
         self._ticks = 0
+        self._process_lock = asyncio.Lock()
         self.now = now
         self.sleep = sleep
         self.deliver_hook = deliver_hook
@@ -132,6 +133,13 @@ class Scheduler:
         return stats
 
     async def _process(self, row, stats: dict[str, int], reminded: set[int], preprod: bool = False) -> None:
+        # тик и кнопка «Следующий пост сейчас» не должны взять одну строку одновременно
+        async with self._process_lock:
+            await self._process_locked(row, stats, reminded, preprod)
+
+    async def _process_locked(
+        self, row, stats: dict[str, int], reminded: set[int], preprod: bool = False
+    ) -> None:
         user_id = row["user_id"]
         queue_id = row["queue_id"]
 

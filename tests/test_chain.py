@@ -278,3 +278,22 @@ async def test_scheduler_polls_faster_while_fast_test_is_running(db):
     assert await sched._sleep_seconds() == 60
     await funnel.set_fast(1, True, now=0)
     assert await sched._sleep_seconds() == 10
+
+
+async def test_run_user_and_tick_never_send_the_same_step_twice(db):
+    import asyncio
+
+    class SlowBot(Bot):
+        async def send_message(self, *a, **k):
+            await asyncio.sleep(0.05)
+            return await super().send_message(*a, **k)
+
+    funnel = FunnelRepo(db)
+    await user(db)
+    await steps(funnel, 100, 100)
+    await funnel.enqueue(1, now=0)
+    bot = SlowBot()
+    sched = Scheduler(bot=bot, users=UsersRepo(db), funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      now=lambda: 500)
+    await asyncio.gather(sched.tick(), sched.run_user(1), sched.run_user(1))
+    assert [t for _, t in bot.sent].count("Пост 1") == 1
