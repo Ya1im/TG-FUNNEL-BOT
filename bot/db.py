@@ -65,6 +65,7 @@ class Database:
             ("users", "funnel_fast", "INTEGER NOT NULL DEFAULT 0"),
             ("funnel_steps", "stop_on_click", "INTEGER NOT NULL DEFAULT 0"),
             ("funnel_steps", "after_click_seconds", "INTEGER"),
+            ("funnel_steps", "extra_messages_json", "TEXT"),
         ):
             if not await self._has_column(table, column):
                 await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

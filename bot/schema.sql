@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS funnel_steps (
     text                  TEXT,
     media_id              INTEGER REFERENCES media(id) ON DELETE SET NULL,
     buttons_json          TEXT,
+    extra_messages_json   TEXT,                             -- 2-е и далее сообщения шага (как в рассылке)
     enabled               INTEGER NOT NULL DEFAULT 1,
     created_at            INTEGER NOT NULL
 );

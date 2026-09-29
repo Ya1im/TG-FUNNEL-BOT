@@ -8,7 +8,7 @@ from typing import Awaitable, Callable
 
 from bot.preprod import allowed_user_ids, timing_note, tester_ids
 from bot.reminder import send_reminder
-from bot.repo.funnel import block_from_row
+from bot.repo.funnel import blocks_from_row
 from bot.sender import BLOCKED, safe_send, send_block
 
 log = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ ERROR_RETRY_SECONDS = 30 * 60
 ERROR_MAX_ATTEMPTS = 3
 FAST_TICK_SECONDS = 10
 BATCH = 200
+STEP_MESSAGE_PAUSE = 1.0        # пауза между сообщениями внутри одного шага
 
 
 class Scheduler:
@@ -177,28 +178,47 @@ class Scheduler:
 
         if preprod and not await self._note_already_sent(row):
             await self._send_timing_note(row)
-        outcome = await send_block(
-            block_from_row(row),
-            self.bot,
-            user_id,
-            user=row,
-            users=self.users,
-            limiter=self.limiter,
-        )
-        if self.sent_log is not None and outcome.message_ids:
-            await self.sent_log.add(user_id, outcome.message_ids, "step", row["step_id"], int(self.now()))
+        outcome, message_ids, sent_before_failure = await self._send_step_messages(row, user_id)
+        if self.sent_log is not None and message_ids:
+            await self.sent_log.add(user_id, message_ids, "step", row["step_id"], int(self.now()))
         if outcome.ok:
             await self.funnel.mark_sent(queue_id, now=int(self.now()))
             stats["sent"] += 1
         elif outcome.status == BLOCKED:
             stats["blocked"] += 1  # очередь пользователя уже очищена в mark_blocked
         else:
-            if row["attempts"] + 1 >= ERROR_MAX_ATTEMPTS:
+            if sent_before_failure:
+                # часть сообщений шага уже у человека — повтор прислал бы дубли, считаем шаг отправленным
+                log.warning(
+                    "Шаг %s: не ушло сообщение после %s отправленных (user_id=%s): %s",
+                    row["step_id"], sent_before_failure, user_id, outcome.error,
+                )
+                await self.funnel.mark_sent(queue_id, now=int(self.now()))
+                stats["sent"] += 1
+            elif row["attempts"] + 1 >= ERROR_MAX_ATTEMPTS:
                 await self.funnel.finish(queue_id, "failed", outcome.error, now=int(self.now()))
                 stats["failed"] += 1
             else:
                 await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, outcome.error)
                 stats["failed"] += 1
+
+    async def _send_step_messages(self, row, user_id: int):
+        """Шлёт все сообщения шага подряд с короткой паузой. Возвращает (итог, номера сообщений,
+        сколько сообщений шага целиком ушло до сбоя)."""
+        message_ids: list[int] = []
+        outcome = None  # в шаге всегда есть хотя бы одно сообщение
+        delivered = 0
+        for index, block in enumerate(blocks_from_row(row)):
+            if index:
+                await self.sleep(STEP_MESSAGE_PAUSE)
+            outcome = await send_block(
+                block, self.bot, user_id, user=row, users=self.users, limiter=self.limiter
+            )
+            message_ids.extend(outcome.message_ids)
+            if not outcome.ok:
+                break
+            delivered += 1
+        return outcome, message_ids, (delivered if outcome.status != BLOCKED else 0)
 
     async def _note_already_sent(self, row) -> bool:
         if self.sent_log is None:

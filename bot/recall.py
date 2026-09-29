@@ -16,6 +16,7 @@ import asyncio
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
 from bot.content import ContentBlock
+from bot.repo.funnel import step_messages
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ async def build_plan(deps, since: int) -> RecallPlan:
     for row in await deps.sent_log.since(since):
         plan.users.setdefault(row["user_id"], UserPlan()).exact_ids.append(row["message_id"])
     legacy = await deps.db.fetchall(
-        "SELECT us.user_id, fs.text, m.kind AS media_kind, m.file_id AS media_file_id "
+        "SELECT us.user_id, fs.text, fs.extra_messages_json, m.kind AS media_kind, m.file_id AS media_file_id "
         "FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
         "LEFT JOIN media m ON m.id = fs.media_id "
         "WHERE us.status = 'sent' AND us.sent_at >= ? "
@@ -76,6 +77,8 @@ async def build_plan(deps, since: int) -> RecallPlan:
         user_plan = plan.users.setdefault(row["user_id"], UserPlan())
         user_plan.legacy_steps += 1
         user_plan.legacy_messages += messages_per_step(row["text"], row["media_kind"], row["media_file_id"])
+        for extra in step_messages(row)[1:]:
+            user_plan.legacy_messages += messages_per_step(extra["text"], extra["media_kind"], extra["file_id"])
     return plan
 
 

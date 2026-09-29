@@ -29,6 +29,7 @@ class FunnelRepo:
         requires_subscription: bool = False,
         on_unsub: str = "skip",
         backfill: bool = True,
+        extra_messages: list[dict] | None = None,
     ) -> int:
         """backfill=False — массовая загрузка всей цепочки разом (import_json, seed): здесь это не
         «добавили один новый шаг», а пересборка с нуля, задним числом никому ничего не шлём."""
@@ -37,8 +38,8 @@ class FunnelRepo:
         )
         step_id = await self.db.execute(
             "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
-            "text, media_id, buttons_json, enabled, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)",
+            "text, media_id, buttons_json, extra_messages_json, enabled, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 position,
                 int(delay_seconds),
@@ -47,6 +48,7 @@ class FunnelRepo:
                 text,
                 media_id,
                 json.dumps(buttons or [], ensure_ascii=False),
+                _dump_extras(extra_messages),
                 int(time.time()),
             ),
         )
@@ -219,7 +221,7 @@ class FunnelRepo:
         return await self.normalize_all(now, rebase_overdue=True)
 
     async def update_step(self, step_id: int, **fields) -> None:
-        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
+        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "extra_messages_json", "enabled", "position"}
         before = await self.get_step(step_id) if "enabled" in fields else None
         sets, params = [], []
         for key, value in fields.items():
@@ -237,6 +239,22 @@ class FunnelRepo:
             await self.normalize_users(await self._users_with_pending(step_id))
         elif "position" in fields:
             await self.normalize_all()
+
+    async def set_messages(self, step_id: int, items: list[dict]) -> None:
+        """Заменить все сообщения шага: первое — в прежние колонки, остальные — в extra_messages_json."""
+        if not items:
+            raise ValueError("В шаге должно остаться хотя бы одно сообщение")
+        first = items[0]
+        await self.db.execute(
+            "UPDATE funnel_steps SET text = ?, media_id = ?, buttons_json = ?, extra_messages_json = ? WHERE id = ?",
+            (
+                first.get("text"),
+                first.get("media_id"),
+                json.dumps(first.get("buttons") or [], ensure_ascii=False),
+                _dump_extras(items[1:]),
+                step_id,
+            ),
+        )
 
     async def get_step(self, step_id: int):
         return await self.db.fetchone("SELECT * FROM funnel_steps WHERE id = ?", (step_id,))
@@ -321,7 +339,7 @@ class FunnelRepo:
         params.append(limit)
         return await self.db.fetchall(
             "SELECT us.id AS queue_id, us.user_id, us.step_id, us.attempts, us.due_at, "
-            "fs.text, fs.buttons_json, fs.requires_subscription, fs.on_unsub, fs.position, "
+            "fs.text, fs.buttons_json, fs.extra_messages_json, fs.media_id, fs.requires_subscription, fs.on_unsub, fs.position, "
             "m.kind AS media_kind, m.file_id AS media_file_id, "
             "u.first_name, u.username, u.is_subscribed "
             "FROM user_steps us "
@@ -385,6 +403,7 @@ class FunnelRepo:
 
     async def export_json(self) -> str:
         steps = await self.list_steps()
+        slugs = {r["id"]: r["slug"] for r in await self.db.fetchall("SELECT id, slug FROM media")}
         data = [
             {
                 "position": s["position"],
@@ -394,6 +413,14 @@ class FunnelRepo:
                 "text": s["text"],
                 "media_slug": s["media_slug"],
                 "buttons": json.loads(s["buttons_json"] or "[]"),
+                "extra_messages": [
+                    {
+                        "text": m.get("text"),
+                        "media_slug": slugs.get(m.get("media_id")),
+                        "buttons": m.get("buttons") or [],
+                    }
+                    for m in step_messages(s)[1:]
+                ],
                 "enabled": bool(s["enabled"]),
             }
             for s in steps
@@ -411,7 +438,18 @@ class FunnelRepo:
             if item.get("media_slug"):
                 row = await media_repo.get_by_slug(item["media_slug"])
                 media_id = row["id"] if row else None
+            extras = []
+            for extra in item.get("extra_messages") or []:
+                extra_media = await media_repo.get_by_slug(extra["media_slug"]) if extra.get("media_slug") else None
+                extras.append({
+                    "text": extra.get("text"),
+                    "media_id": extra_media["id"] if extra_media else None,
+                    "media_kind": extra_media["kind"] if extra_media else None,
+                    "file_id": extra_media["file_id"] if extra_media else None,
+                    "buttons": extra.get("buttons") or [],
+                })
             step_id = await self.add_step(
+                extra_messages=extras,
                 delay_seconds=int(item.get("delay_seconds", 0)),
                 text=item.get("text"),
                 media_id=media_id,
@@ -442,6 +480,64 @@ def block_from_row(row) -> ContentBlock:
         file_id=row["media_file_id"],
         buttons=buttons,
     )
+
+
+_EXTRA_KEYS = ("text", "media_kind", "file_id", "buttons", "media_id")
+
+
+def _dump_extras(items: list[dict] | None) -> str | None:
+    cleaned = [{key: item.get(key) for key in _EXTRA_KEYS} for item in (items or [])]
+    for entry in cleaned:
+        entry["buttons"] = entry["buttons"] or []
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned else None
+
+
+def _row_get(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _load_json_list(raw) -> list:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def step_messages(row) -> list[dict]:
+    """Все сообщения шага по порядку: первое из прежних колонок, остальные из extra_messages_json."""
+    first = {
+        "text": row["text"],
+        "media_kind": _row_get(row, "media_kind"),
+        "file_id": _row_get(row, "media_file_id"),
+        "buttons": [b for b in _load_json_list(_row_get(row, "buttons_json")) if isinstance(b, dict)],
+        "media_id": _row_get(row, "media_id"),
+    }
+    extras = [
+        {key: item.get(key) for key in _EXTRA_KEYS} | {"buttons": item.get("buttons") or []}
+        for item in _load_json_list(_row_get(row, "extra_messages_json"))
+        if isinstance(item, dict)
+    ]
+    return [first, *extras]
+
+
+def block_from_item(item: dict) -> ContentBlock:
+    return ContentBlock(
+        text=item.get("text"),
+        media_kind=item.get("media_kind"),
+        file_id=item.get("file_id"),
+        buttons=item.get("buttons") or [],
+    )
+
+
+def blocks_from_row(row) -> list[ContentBlock]:
+    """Сообщения шага, готовые к отправке (одно или несколько)."""
+    return [block_from_item(item) for item in step_messages(row)]
 
 
 def human_delay(seconds: int) -> str:
