@@ -1,6 +1,7 @@
 """Шаги прогрева и очередь их отправки конкретным пользователям."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -17,6 +18,7 @@ class FunnelRepo:
     def __init__(self, db: Database, admin_ids: tuple[int, ...] = ()) -> None:
         self.db = db
         self.admin_ids = tuple(admin_ids or ())
+        self._messages_lock = asyncio.Lock()
 
     # --- шаги -------------------------------------------------------------
 
@@ -245,16 +247,35 @@ class FunnelRepo:
         if not items:
             raise ValueError("В шаге должно остаться хотя бы одно сообщение")
         first = items[0]
+        media_id = first.get("media_id")
+        if media_id is not None and not await self.db.fetchval("SELECT 1 FROM media WHERE id = ?", (media_id,)):
+            media_id = None  # файл удалили из медиатеки — ссылка на него уже недействительна
+        if media_id is None and first.get("file_id"):
+            media_id = await self.db.fetchval("SELECT id FROM media WHERE file_id = ? LIMIT 1", (first["file_id"],))
         await self.db.execute(
             "UPDATE funnel_steps SET text = ?, media_id = ?, buttons_json = ?, extra_messages_json = ? WHERE id = ?",
             (
                 first.get("text"),
-                first.get("media_id"),
+                media_id,
                 json.dumps(first.get("buttons") or [], ensure_ascii=False),
                 _dump_extras(items[1:]),
                 step_id,
             ),
         )
+
+    async def edit_messages(self, step_id: int, mutate) -> list[dict] | None:
+        """Прочитать сообщения шага, изменить и записать — под замком: альбом из нескольких файлов
+        приходит параллельными апдейтами, и без замка последняя запись затирала бы остальные.
+        mutate(items) правит список на месте; вернёт False — ничего не пишем. None — шага нет."""
+        async with self._messages_lock:
+            row = await self.get_step_row(step_id)
+            if row is None:
+                return None
+            items = step_messages(row)
+            if mutate(items) is False:
+                return items
+            await self.set_messages(step_id, items)
+            return items
 
     async def get_step(self, step_id: int):
         return await self.db.fetchone("SELECT * FROM funnel_steps WHERE id = ?", (step_id,))
@@ -438,6 +459,13 @@ class FunnelRepo:
     async def import_json(self, raw: str, media_repo) -> int:
         """Заменяет цепочку целиком. Медиа ищется по slug — файлы надо залить заранее."""
         data = json.loads(raw)
+        # проверяем файл целиком ДО удаления цепочки — иначе битый файл оставит её стёртой
+        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+            raise ValueError("ожидается список шагов")
+        for item in data:
+            extras = item.get("extra_messages") or []
+            if not isinstance(extras, list) or not all(isinstance(extra, dict) for extra in extras):
+                raise ValueError("extra_messages должен быть списком сообщений")
         await self.db.execute("DELETE FROM user_steps")
         await self.db.execute("DELETE FROM funnel_steps")
         count = 0

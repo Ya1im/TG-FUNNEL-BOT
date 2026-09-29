@@ -348,6 +348,45 @@ async def test_admin_step_preview_sends_every_message(stack):
     assert [m.text for m in session.calls("SendMessage")] == ["Второе"]
 
 
+async def test_album_of_photos_keeps_every_file_in_order(stack):
+    """Несколько файлов подряд (альбом) приходят параллельно и не должны ни затереть, ни подменить друг друга."""
+    import asyncio
+
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=30))
+    await asyncio.gather(*(feed(dp, bot, message=make_photo_message(f"P{i}", 40 + i)) for i in range(4)))
+    await feed(dp, bot, callback=make_callback("a:fun:adone", user_id=ADMIN_ID))
+    msgs = await _messages(deps, (await deps.funnel.list_steps())[0]["id"])
+    assert sorted(m["file_id"] for m in msgs) == ["P0", "P1", "P2", "P3"]
+
+    step_id = (await deps.funnel.list_steps())[0]["id"]
+    await feed(dp, bot, callback=make_callback(f"a:fun:madd:{step_id}", user_id=ADMIN_ID))
+    await asyncio.gather(*(feed(dp, bot, message=make_photo_message(f"Q{i}", 60 + i)) for i in range(3)))
+    assert len(await _messages(deps, step_id)) == 7
+
+
+async def test_commands_are_not_collected_as_step_messages(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=30))
+    await feed(dp, bot, message=make_message("/help", user_id=ADMIN_ID, message_id=31))
+    await feed(dp, bot, message=make_message("Настоящее", user_id=ADMIN_ID, message_id=32))
+    await feed(dp, bot, callback=make_callback("a:fun:adone", user_id=ADMIN_ID))
+    assert [m["text"] for m in await _messages(deps, (await deps.funnel.list_steps())[0]["id"])] == ["Настоящее"]
+
+
+async def test_double_done_creates_only_one_step(stack):
+    import asyncio
+
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:fun:add", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=30))
+    await feed(dp, bot, message=make_message("Текст", user_id=ADMIN_ID, message_id=31))
+    await asyncio.gather(*(feed(dp, bot, callback=make_callback("a:fun:adone", user_id=ADMIN_ID)) for _ in range(2)))
+    assert len(await deps.funnel.list_steps()) == 1
+
+
 async def test_step_card_and_list_show_message_count(stack):
     dp, bot, session, deps = stack
     step_id = await _three_message_step(deps)

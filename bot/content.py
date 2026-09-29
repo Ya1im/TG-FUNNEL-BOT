@@ -76,7 +76,8 @@ class ContentBlock:
         send = VOICE_FORBIDDEN_FALLBACK.get(self.media_kind)
         if not send or not self.file_id:
             return None
-        kb = self.keyboard()
+        # текст пойдёт отдельным сообщением — кнопка будет под ним, а не под видео (иначе кнопки две)
+        kb = None if self.render(user) else self.keyboard()
         return _bind(send, bot, chat_id, self.file_id, None, kb)
 
     def factories(self, bot: Bot, chat_id: int, user: Any = None) -> list[Factory]:
@@ -92,8 +93,10 @@ class ContentBlock:
                 raise ValueError(f"Неизвестный тип медиа: {kind}")
             caption_ok = kind not in CAPTIONLESS and text and len(text) <= CAPTION_LIMIT
             caption = text if caption_ok else None
-            out.append(_bind(send, bot, chat_id, self.file_id, caption, kb))
-            if text and not caption_ok:
+            split = bool(text) and not caption_ok  # текст уходит отдельным сообщением
+            # кнопка всегда одна: если есть отдельный текст — она под ним, а не под медиа
+            out.append(_bind(send, bot, chat_id, self.file_id, caption, None if split else kb))
+            if split:
                 out.append(_bind(_send_text, bot, chat_id, None, text, kb))
         elif text:
             out.append(_bind(_send_text, bot, chat_id, None, text, kb))

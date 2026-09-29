@@ -246,7 +246,7 @@ async def capture_content(deps, message: Message, slug_prefix: str) -> tuple[str
     media_id = None
     if found:
         kind, file_id, file_unique_id = found
-        slug = f"{slug_prefix}_{int(time.time())}"
+        slug = f"{slug_prefix}_{int(time.time())}_{message.message_id}"  # уникален: два файла в одну секунду не должны затирать друг друга
         media_id = await deps.media.save(slug, kind, file_id, file_unique_id)
     return text, media_id
 

@@ -178,9 +178,7 @@ class Scheduler:
 
         if preprod and not await self._note_already_sent(row):
             await self._send_timing_note(row)
-        outcome, message_ids, sent_before_failure = await self._send_step_messages(row, user_id)
-        if self.sent_log is not None and message_ids:
-            await self.sent_log.add(user_id, message_ids, "step", row["step_id"], int(self.now()))
+        outcome, sent_before_failure = await self._send_step_messages(row, user_id)
         if outcome.ok:
             await self.funnel.mark_sent(queue_id, now=int(self.now()))
             stats["sent"] += 1
@@ -203,22 +201,23 @@ class Scheduler:
                 stats["failed"] += 1
 
     async def _send_step_messages(self, row, user_id: int):
-        """Шлёт все сообщения шага подряд с короткой паузой. Возвращает (итог, номера сообщений,
-        сколько сообщений шага целиком ушло до сбоя)."""
-        message_ids: list[int] = []
+        """Шлёт все сообщения шага подряд с короткой паузой. Возвращает (итог, сколько сообщений
+        уже ушло к человеку до сбоя). Номера пишем в журнал сразу после каждого блока, чтобы отзыв
+        видел их, даже если процесс остановят посреди шага."""
+        sent_count = 0
         outcome = None  # в шаге всегда есть хотя бы одно сообщение
-        delivered = 0
         for index, block in enumerate(blocks_from_row(row)):
             if index:
                 await self.sleep(STEP_MESSAGE_PAUSE)
             outcome = await send_block(
                 block, self.bot, user_id, user=row, users=self.users, limiter=self.limiter
             )
-            message_ids.extend(outcome.message_ids)
+            if self.sent_log is not None and outcome.message_ids:
+                await self.sent_log.add(user_id, outcome.message_ids, "step", row["step_id"], int(self.now()))
+            sent_count += len(outcome.message_ids)
             if not outcome.ok:
                 break
-            delivered += 1
-        return outcome, message_ids, (delivered if outcome.status != BLOCKED else 0)
+        return outcome, (sent_count if outcome.status != BLOCKED else 0)
 
     async def _note_already_sent(self, row) -> bool:
         if self.sent_log is None:

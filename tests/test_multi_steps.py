@@ -203,15 +203,91 @@ async def test_export_import_round_trip_keeps_extra_messages(db):
     assert msgs[1]["file_id"] == "PH" and msgs[1]["buttons"][0]["url"] == "https://z.ru"
 
 
-async def test_legacy_recall_counts_every_message_of_step(db):
+async def test_legacy_recall_does_not_overcount_extra_messages(db):
+    """Для шагов без журнала считаем только сообщение №1: лучше недоудалить, чем стереть чужое."""
     funnel = FunnelRepo(db)
     await UsersRepo(db).upsert(1, "u", "В")
-    step_id = await funnel.add_step(
-        100, text="A", backfill=False, extra_messages=[item("B"), item(None, "video_note", "VN")]
-    )
+    await funnel.add_step(100, text="A", backfill=False, extra_messages=[item("B"), item("C")])
     await funnel.enqueue(1, now=0)
     queue_id = (await funnel.due_steps(now=100))[0]["queue_id"]
     await funnel.mark_sent(queue_id, now=100)
     deps = SimpleNamespace(db=db, sent_log=SentLogRepo(db), limiter=None)
     plan = await build_plan(deps, since=0)
-    assert plan.users[1].legacy_messages == 3 and plan.users[1].legacy_steps == 1
+    assert plan.users[1].legacy_messages == 1 and plan.users[1].legacy_steps == 1
+
+
+async def test_journal_is_written_per_message_even_if_sending_is_interrupted(db):
+    import asyncio
+
+    bot = Bot()
+    funnel, sched, step_id, _ = await setup(db, bot, item("A"), item("B"), item("C"))
+
+    async def cancelling_sleep(seconds):
+        if len(bot.calls) == 2:
+            raise asyncio.CancelledError()
+
+    sched.sleep = cancelling_sleep
+    with pytest.raises(asyncio.CancelledError):
+        await sched.tick()
+    logged = await db.fetchall("SELECT message_id FROM sent_messages WHERE ref_id = ?", (step_id,))
+    assert sorted(r["message_id"] for r in logged) == [101, 102]      # отзыв увидит уже отправленное
+
+
+async def test_partial_first_block_is_not_repeated(db):
+    """Кружок с текстом — два вызова API; кружок ушёл, текст упал: повтор прислал бы кружок дважды."""
+    err = TelegramBadRequest(method=METHOD, message="Bad Request: oops")
+    bot = Bot(fail_at=2, error=err)
+    funnel, sched, step_id, _ = await setup(db, bot, item("Текст", "video_note", "VN"))
+    stats = await sched.tick()
+    assert stats["sent"] == 1 and stats["failed"] == 0
+    assert (await sched.tick())["sent"] == 0
+
+
+async def test_set_messages_survives_deleted_media_and_moves_media_to_first(db):
+    funnel = FunnelRepo(db)
+    media = MediaRepo(db)
+    media_id = await media.save("m1", "photo", "PH1", "u1")
+    step_id = await funnel.add_step(100, text="Первое", backfill=False)
+    await funnel.set_messages(step_id, [
+        item("Первое"), {**item("С фото", "photo", "PH1"), "media_id": media_id},
+    ])
+    await db.execute("DELETE FROM media WHERE id = ?", (media_id,))
+    msgs = await _load(funnel, step_id)
+    msgs[0], msgs[1] = msgs[1], msgs[0]
+    await funnel.set_messages(step_id, msgs)           # раньше падало FOREIGN KEY constraint failed
+    assert (await funnel.get_step(step_id))["text"] == "С фото"
+
+
+async def test_media_without_media_id_is_found_by_file_id_when_moved_first(db):
+    funnel = FunnelRepo(db)
+    media = MediaRepo(db)
+    media_id = await media.save("m1", "photo", "PH1", "u1")
+    step_id = await funnel.add_step(100, text="Первое", backfill=False)
+    await funnel.set_messages(step_id, [item("С фото", "photo", "PH1"), item("Второе")])
+    assert (await funnel.get_step(step_id))["media_id"] == media_id
+
+
+async def _load(funnel, step_id):
+    return step_messages(await funnel.get_step_row(step_id))
+
+
+async def test_edit_messages_is_serialized_for_parallel_updates(db):
+    import asyncio
+
+    funnel = FunnelRepo(db)
+    step_id = await funnel.add_step(100, text="Первое", backfill=False)
+
+    def add(text):
+        return lambda items: items.append(item(text))
+
+    await asyncio.gather(*(funnel.edit_messages(step_id, add(f"М{i}")) for i in range(5)))
+    assert len(await _load(funnel, step_id)) == 6            # ни одно добавление не потерялось
+
+
+async def test_import_with_broken_extras_keeps_existing_chain(db):
+    funnel = FunnelRepo(db)
+    await funnel.add_step(100, text="Живой шаг", backfill=False)
+    bad = json.dumps([{"delay_seconds": 5, "text": "X", "extra_messages": ["не словарь"]}])
+    with pytest.raises(ValueError):
+        await funnel.import_json(bad, MediaRepo(db))
+    assert [s["text"] for s in await funnel.list_steps()] == ["Живой шаг"]

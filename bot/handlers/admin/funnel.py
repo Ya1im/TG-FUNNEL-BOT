@@ -1,6 +1,8 @@
 """Редактор цепочки прогрева."""
 from __future__ import annotations
 
+import asyncio
+import html
 import json
 
 from aiogram import F, Router
@@ -82,8 +84,8 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
     messages = step_messages(step)
     if len(messages) == 1:
         content = (
-            f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
-            f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
+            f"🎬 Медиа: {html.escape(step['media_slug'] or 'нет')}\n"
+            f"🔘 Кнопки: {html.escape(buttons_hint(step['buttons_json']))}\n\n"
             f"Текст:\n{step['text'] or '<i>без текста</i>'}"
         )
     else:
@@ -358,27 +360,31 @@ async def _refresh_counter(message: Message, state: FSMContext, text: str, marku
         await state.update_data(_menu_chat_id=result.chat.id, _menu_message_id=result.message_id)
 
 
+_COLLECT_LOCK = asyncio.Lock()
+
 _EMPTY_HINT = (
     "Такой тип сообщения не поддерживается. Пришли текст, фото, видео, кружок, файл, "
     "аудио, голосовое, гифку или стикер."
 )
 
 
-@router.message(FunnelAdd.collecting)
+@router.message(FunnelAdd.collecting, ~F.text.startswith("/"))
 async def on_add_collect(message: Message, state: FSMContext, deps) -> None:
-    item = await _item_from_message(deps, message)
-    if item is None:
-        await message.answer(_EMPTY_HINT)
-        return
-    data = await state.get_data()
-    messages = data.get("messages", [])
-    messages.append(item)
-    await state.update_data(messages=messages)
-    await _refresh_counter(
-        message, state,
-        _collect_text("➕ <b>Новый шаг прогрева</b>", f"Задержка: {human_delay(data['delay'])}.", len(messages)),
-        _collect_markup("a:fun:adone", "a:fun"),
-    )
+    # альбом приходит параллельными апдейтами: замок сохраняет порядок и не даёт затереть друг друга
+    async with _COLLECT_LOCK:
+        item = await _item_from_message(deps, message)
+        if item is None:
+            await message.answer(_EMPTY_HINT)
+            return
+        data = await state.get_data()
+        messages = data.get("messages", [])
+        messages.append(item)
+        await state.update_data(messages=messages)
+        await _refresh_counter(
+            message, state,
+            _collect_text("➕ <b>Новый шаг прогрева</b>", f"Задержка: {human_delay(data['delay'])}.", len(messages)),
+            _collect_markup("a:fun:adone", "a:fun"),
+        )
 
 
 @router.callback_query(F.data == "a:fun:adone")
@@ -389,13 +395,13 @@ async def cb_add_done(call: CallbackQuery, state: FSMContext, deps) -> None:
         await call.answer("Сначала пришли хотя бы одно сообщение", show_alert=True)
         return
     first, rest = messages[0], messages[1:]
+    await state.clear()  # до создания: двойное нажатие «Готово» не должно создать два шага
     step_id = await deps.funnel.add_step(
         delay_seconds=data["delay"],
         text=first.get("text"),
         media_id=first.get("media_id"),
         extra_messages=rest,
     )
-    await state.clear()
     await messages_screen(call, deps, step_id, note="Шаг создан. Кнопки-ссылки повесь на нужные сообщения.")
     await call.answer()
 
@@ -436,7 +442,7 @@ async def message_screen(target, deps, step_id: int, idx: int) -> None:
     text = (
         f"📨 <b>Сообщение #{idx + 1}</b> из {len(messages)}\n\n"
         f"🎬 Медиа: {item['media_kind'] or 'нет'}\n"
-        f"🔘 Кнопки: {', '.join(b.get('text', '') for b in item['buttons']) or 'нет'}\n\n"
+        f"🔘 Кнопки: {html.escape(', '.join(b.get('text', '') for b in item['buttons'])) or 'нет'}\n\n"
         f"Текст:\n{safe_excerpt(item['text']) or '<i>без текста</i>'}"
     )
     await show(
@@ -492,11 +498,14 @@ async def cb_message_preview(call: CallbackQuery, deps) -> None:
 
 async def _move_message(call: CallbackQuery, deps, direction: int) -> None:
     step_id, idx = _ids(call)
-    messages = await _load_messages(deps, step_id)
-    new_idx = idx + direction
-    if messages and 0 <= idx < len(messages) and 0 <= new_idx < len(messages):
-        messages[idx], messages[new_idx] = messages[new_idx], messages[idx]
-        await deps.funnel.set_messages(step_id, messages)
+
+    def move(items: list[dict]):
+        new_idx = idx + direction
+        if not (0 <= idx < len(items) and 0 <= new_idx < len(items)):
+            return False
+        items[idx], items[new_idx] = items[new_idx], items[idx]
+
+    await deps.funnel.edit_messages(step_id, move)
     await call.answer()
     await messages_screen(call, deps, step_id)
 
@@ -514,16 +523,23 @@ async def cb_message_down(call: CallbackQuery, deps) -> None:
 @router.callback_query(F.data.startswith("a:fun:mx:"))
 async def cb_message_delete(call: CallbackQuery, deps) -> None:
     step_id, idx = _ids(call)
-    messages = await _load_messages(deps, step_id)
-    if messages is None:
+    outcome = {"last": False}
+
+    def delete(items: list[dict]):
+        if len(items) <= 1:
+            outcome["last"] = True
+            return False
+        if not (0 <= idx < len(items)):
+            return False
+        items.pop(idx)
+
+    items = await deps.funnel.edit_messages(step_id, delete)
+    if items is None:
         await call.answer("Шаг не найден", show_alert=True)
         return
-    if len(messages) <= 1:
+    if outcome["last"]:
         await call.answer("В шаге должно остаться хотя бы одно сообщение — удали сам шаг", show_alert=True)
         return
-    if 0 <= idx < len(messages):
-        messages.pop(idx)
-        await deps.funnel.set_messages(step_id, messages)
     await call.answer("Удалил")
     await messages_screen(call, deps, step_id)
 
@@ -546,17 +562,24 @@ async def cb_message_edit(call: CallbackQuery, state: FSMContext) -> None:
 async def on_message_edit_content(message: Message, state: FSMContext, deps) -> None:
     data = await state.get_data()
     step_id, idx = data.get("msg_step_id"), data.get("msg_idx")
-    messages = await _load_messages(deps, step_id) if step_id is not None else None
-    if not messages or idx is None or not (0 <= idx < len(messages)):
+    if step_id is None or idx is None:
         await state.clear()
         return
-    item = await _item_from_message(deps, message)
-    if item is None:
+    new_item = await _item_from_message(deps, message)
+    if new_item is None:
         await message.answer("Пустое сообщение. Пришли текст или файл.")
         return
-    item["buttons"] = messages[idx]["buttons"]
-    messages[idx] = item
-    await deps.funnel.set_messages(step_id, messages)
+
+    def replace(items: list[dict]):
+        if not (0 <= idx < len(items)):
+            return False
+        new_item["buttons"] = items[idx]["buttons"]  # кнопки при замене содержимого остаются
+        items[idx] = new_item
+
+    if await deps.funnel.edit_messages(step_id, replace) is None:
+        await state.clear()
+        await message.answer("Шаг уже удалён.")
+        return
     await state.clear()
     await message_screen(message, deps, step_id, idx)
 
@@ -579,12 +602,20 @@ async def cb_message_buttons(call: CallbackQuery, state: FSMContext) -> None:
 async def on_message_buttons(message: Message, state: FSMContext, deps) -> None:
     data = await state.get_data()
     step_id, idx = data.get("msg_step_id"), data.get("msg_idx")
-    messages = await _load_messages(deps, step_id) if step_id is not None else None
-    if not messages or idx is None or not (0 <= idx < len(messages)):
+    if step_id is None or idx is None:
         await state.clear()
         return
-    messages[idx]["buttons"] = [] if message.text.strip() == "-" else parse_buttons(message.text)
-    await deps.funnel.set_messages(step_id, messages)
+    buttons = [] if message.text.strip() == "-" else parse_buttons(message.text)
+
+    def set_buttons(items: list[dict]):
+        if not (0 <= idx < len(items)):
+            return False
+        items[idx]["buttons"] = buttons
+
+    if await deps.funnel.edit_messages(step_id, set_buttons) is None:
+        await state.clear()
+        await message.answer("Шаг уже удалён.")
+        return
     await state.clear()
     await message_screen(message, deps, step_id, idx)
 
@@ -604,27 +635,30 @@ async def cb_message_add(call: CallbackQuery, deps, state: FSMContext) -> None:
     await call.answer()
 
 
-@router.message(FunnelMsgAdd.collecting)
+@router.message(FunnelMsgAdd.collecting, ~F.text.startswith("/"))
 async def on_message_add(message: Message, state: FSMContext, deps) -> None:
-    data = await state.get_data()
-    step_id = data.get("msg_step_id")
-    messages = await _load_messages(deps, step_id) if step_id is not None else None
-    if messages is None:
-        await state.clear()
-        return
-    item = await _item_from_message(deps, message)
-    if item is None:
-        await message.answer(_EMPTY_HINT)
-        return
-    messages.append(item)
-    await deps.funnel.set_messages(step_id, messages)  # сохраняем сразу — черновика нет
-    added = int(data.get("added", 0)) + 1
-    await state.update_data(added=added)
-    await _refresh_counter(
-        message, state,
-        _collect_text("📨 <b>Новые сообщения шага</b>", "", added, "Добавлено в шаг"),
-        _collect_markup(f"a:fun:msgs:{step_id}"),
-    )
+    async with _COLLECT_LOCK:
+        data = await state.get_data()
+        step_id = data.get("msg_step_id")
+        if step_id is None:
+            await state.clear()
+            return
+        item = await _item_from_message(deps, message)
+        if item is None:
+            await message.answer(_EMPTY_HINT)
+            return
+        # сохраняем сразу — черновика нет
+        if await deps.funnel.edit_messages(step_id, lambda items: items.append(item)) is None:
+            await state.clear()
+            await message.answer("Шаг уже удалён.")
+            return
+        added = int(data.get("added", 0)) + 1
+        await state.update_data(added=added)
+        await _refresh_counter(
+            message, state,
+            _collect_text("📨 <b>Новые сообщения шага</b>", "", added, "Добавлено в шаг"),
+            _collect_markup(f"a:fun:msgs:{step_id}"),
+        )
 
 
 # --- экспорт, импорт -------------------------------------
