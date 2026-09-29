@@ -85,8 +85,10 @@ async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = Non
         await send_menu(bot, deps, chat_id)
 
 
-async def deliver_material(bot, deps, chat_id: int) -> None:
-    """Материал + персональная ссылка в закрытый канал + запуск прогрева."""
+async def deliver_material(bot, deps, chat_id: int, send_invite: bool = True) -> None:
+    """Материал + персональная ссылка в закрытый канал + запуск прогрева.
+
+    send_invite=False — без личной ссылки в закрытый канал (автовыдача неподписчику)."""
     user = await deps.users.get(chat_id)
 
     intro = (await deps.settings.get("material_intro")).strip()
@@ -101,7 +103,7 @@ async def deliver_material(bot, deps, chat_id: int) -> None:
             continue
         await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
 
-    invite = await build_invite_link(bot, deps, chat_id)
+    invite = await build_invite_link(bot, deps, chat_id) if send_invite else None
     if invite:
         text = await deps.settings.get("private_text")
         kb = link_kb(await deps.settings.get("btn_private"), invite)
@@ -113,6 +115,42 @@ async def deliver_material(bot, deps, chat_id: int) -> None:
 
     await deps.users.mark_material_sent(chat_id)
     await deps.funnel.enqueue(chat_id)
+
+
+async def deliver_material_once(
+    bot, deps, chat_id: int, *, send_invite: bool = True, now: int | None = None
+) -> bool:
+    """Выдать урок ровно один раз: подписка и автовыдача идут через этот вход.
+
+    False — урок уже выдан или его прямо сейчас выдаёт другой вызов."""
+    now = int(now if now is not None else time.time())
+    if not await deps.users.claim_delivery(chat_id, now):
+        return False
+    try:
+        await deliver_material(bot, deps, chat_id, send_invite=send_invite)
+    except Exception:
+        await deps.users.release_claim(chat_id)
+        raise
+    return True
+
+
+async def auto_deliver_due(bot, deps, now: int | None = None) -> int:
+    """Раз в тик: выдать урок тем, кто не подписался/не нажал «Проверить» за отведённое время."""
+    minutes = await deps.settings.get_int("auto_deliver_minutes")
+    if not minutes or minutes <= 0:
+        return 0
+    now = int(now if now is not None else time.time())
+    delivered = 0
+    for user_id in await deps.users.due_for_auto_delivery(now, minutes):
+        try:
+            state = await deps.gate.status(user_id, cached_seconds=300)
+            if await deliver_material_once(bot, deps, user_id, send_invite=(state == "yes"), now=now):
+                delivered += 1
+        except Exception:  # noqa: BLE001 — один сбойный пользователь не должен останавливать остальных
+            log.exception("Автовыдача урока пользователю %s не удалась", user_id)
+    if delivered:
+        log.info("Автовыдача урока: %s", delivered)
+    return delivered
 
 
 async def build_invite_link(bot, deps, user_id: int) -> str | None:
@@ -139,7 +177,7 @@ async def check_subscription_flow(bot, deps, user_id: int, chat_id: int) -> bool
     if await deps.gate.check(user_id):
         user = await deps.users.get(user_id)
         if not (user and user["material_sent_at"]):
-            await deliver_material(bot, deps, chat_id)
+            await deliver_material_once(bot, deps, chat_id)
         return True
     return False
 

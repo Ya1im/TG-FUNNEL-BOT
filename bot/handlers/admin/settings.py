@@ -33,6 +33,9 @@ TEXT_KEYS = {
     "btn_private": "Кнопка «Войти в закрытый канал»",
     "reminder_text": "Напоминание подписаться (в прогреве)",
     "resub_reminder_text": "Напоминание подписаться (в рассылке)",
+    "auto_deliver_minutes": "Выдать урок сам через N минут после /start, если не подписался (число, 0 — выключено)",
+    "lesson_link_text": "Сообщение со ссылкой после нажатия кнопки «клик»",
+    "lesson_link_btn": "Кнопка со ссылкой на урок после «клика»",
     "gate_retry_hours": "Прогрев: повторять напоминание через N часов (число)",
     "gate_max_attempts": "Прогрев: сколько раз напоминать (число)",
     # already_started_text сюда больше не входит — ответ на повторный /start
@@ -47,10 +50,15 @@ TEXT_GROUPS = {
         [
             "btn_subscribe", "btn_check", "not_subscribed_alert", "subscribed_ok_alert",
             "reminder_text", "resub_reminder_text", "gate_retry_hours", "gate_max_attempts",
+            "auto_deliver_minutes",
         ],
         "a:flow:sub",
     ),
-    "material": ("🎁 Материал и закрытый канал", ["material_intro", "private_text", "btn_private"], "a:flow"),
+    "material": (
+        "🎁 Материал и закрытый канал",
+        ["material_intro", "private_text", "btn_private", "lesson_link_text", "lesson_link_btn"],
+        "a:flow",
+    ),
 }
 
 

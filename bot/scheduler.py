@@ -33,6 +33,7 @@ class Scheduler:
         tick_seconds: int = 60,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        deliver_hook: Callable[[], Awaitable[None]] | None = None,
         broadcast_hook: Callable[[], Awaitable[None]] | None = None,
         backup_hook: Callable[[], Awaitable[None]] | None = None,
         stats_export_hook: Callable[[], Awaitable[None]] | None = None,
@@ -46,6 +47,7 @@ class Scheduler:
         self.tick_seconds = tick_seconds
         self.now = now
         self.sleep = sleep
+        self.deliver_hook = deliver_hook
         self.broadcast_hook = broadcast_hook
         self.backup_hook = backup_hook
         self.stats_export_hook = stats_export_hook
@@ -75,6 +77,11 @@ class Scheduler:
 
     async def tick(self) -> dict[str, int]:
         stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
+        if self.deliver_hook is not None:
+            try:
+                await self.deliver_hook()
+            except Exception:  # noqa: BLE001 — автовыдача не должна останавливать прогрев
+                log.exception("Ошибка автовыдачи урока")
         rows = await self.funnel.due_steps(int(self.now()), limit=BATCH)
         reminded: set[int] = set()
         for row in rows:

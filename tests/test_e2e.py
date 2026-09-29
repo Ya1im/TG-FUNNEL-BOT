@@ -1461,3 +1461,15 @@ async def test_admin_step_delay_after_click_rejects_garbage(stack):
     await feed(dp, bot, callback=make_callback(f"a:fun:ack:{step_id}", user_id=ADMIN_ID))
     await feed(dp, bot, message=make_message("абракадабра", user_id=ADMIN_ID, message_id=62))
     assert (await deps.funnel.get_step(step_id))["after_click_seconds"] is None
+
+
+async def test_admin_edits_auto_deliver_minutes(stack):
+    dp, bot, session, deps = stack
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set:texts:sub", user_id=ADMIN_ID))
+    shown = " ".join(getattr(r, "text", "") or "" for r in session.requests)
+    assert "Выдать урок сам через N минут" in shown
+
+    await feed(dp, bot, callback=make_callback("a:set:t:auto_deliver_minutes", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("30", user_id=ADMIN_ID, message_id=70))
+    assert await deps.settings.get_int("auto_deliver_minutes") == 30

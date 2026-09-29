@@ -226,3 +226,28 @@ async def test_reminder_interval_comes_from_settings(db):
     await scheduler.tick()
     due = (await db.fetchone("SELECT due_at FROM user_steps"))["due_at"]
     assert due - time.time() < 3700
+
+
+async def test_tick_runs_deliver_hook_before_steps(db):
+    scheduler, bot, users, funnel = await build(db)
+    order = []
+
+    async def hook():
+        order.append("deliver")
+
+    scheduler.deliver_hook = hook
+    await scheduler.tick()
+    assert order == ["deliver"]
+
+
+async def test_deliver_hook_failure_does_not_break_tick(db):
+    scheduler, bot, users, funnel = await build(db)
+    step_id = await funnel.add_step(0, text="Пуш", backfill=False)
+    await funnel.enqueue(1, now=0)
+
+    async def hook():
+        raise RuntimeError("boom")
+
+    scheduler.deliver_hook = hook
+    stats = await scheduler.tick()
+    assert stats["sent"] == 1

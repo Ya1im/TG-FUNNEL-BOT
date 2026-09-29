@@ -18,7 +18,7 @@ from bot.db import Database
 from bot.deps import Deps
 from bot.handlers import build_router
 from bot.scheduler import Scheduler
-from bot.services import migrate_repeat_start_blocks
+from bot.services import auto_deliver_due, migrate_repeat_start_blocks
 from bot.stats_export import stats_export_hook
 
 log = logging.getLogger("bot")
@@ -91,6 +91,7 @@ async def main() -> None:
         gate=deps.gate,
         limiter=deps.limiter,
         tick_seconds=config.tick_seconds,
+        deliver_hook=lambda: auto_deliver_due(bot, deps),
         broadcast_hook=deps.engine.run_scheduled,
         backup_hook=daily_backup_hook(db),
         stats_export_hook=stats_export_hook(deps),
