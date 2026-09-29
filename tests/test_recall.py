@@ -217,3 +217,18 @@ async def test_failed_user_keeps_journal_and_step_for_retry(db):
     bot2 = Bot()
     again = await run_recall(bot2, deps, since=NOW - 3600, now=NOW)
     assert (1, [10]) in bot2.deleted and again["failed"] == 0
+
+
+async def test_recall_cancelling_head_restores_the_chain(db):
+    """Срок есть только у головного шага; отменили голову — следующий обязан получить срок."""
+    users, funnel = UsersRepo(db), FunnelRepo(db)
+    await users.upsert(1, "u", "В")
+    ids = [await funnel.add_step(3600, text=f"П{i}", backfill=False) for i in range(3)]
+    await funnel.enqueue(1, now=0)
+    deps = SimpleNamespace(db=db, sent_log=SentLogRepo(db), limiter=None, funnel=funnel)
+    result = await run_recall(Bot(), deps, since=NOW - 3600, now=10 * 3600)
+    assert result["cancelled"] == 1
+    rows = await db.fetchall("SELECT status, due_at FROM user_steps ORDER BY id")
+    assert rows[0]["status"] == "skipped"
+    assert rows[1]["status"] == "pending" and rows[1]["due_at"] == 10 * 3600 + 3600   # снова есть голова
+    assert len(await funnel.due_steps(now=11 * 3600)) == 1

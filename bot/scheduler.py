@@ -33,6 +33,7 @@ class Scheduler:
         limiter=None,
         sent_log=None,
         tick_seconds: int = 60,
+        heal_every_ticks: int = 60,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         deliver_hook: Callable[[], Awaitable[None]] | None = None,
@@ -48,6 +49,8 @@ class Scheduler:
         self.limiter = limiter
         self.sent_log = sent_log
         self.tick_seconds = tick_seconds
+        self.heal_every_ticks = heal_every_ticks
+        self._ticks = 0
         self.now = now
         self.sleep = sleep
         self.deliver_hook = deliver_hook
@@ -85,6 +88,14 @@ class Scheduler:
                 await self.deliver_hook()
             except Exception:  # noqa: BLE001 — автовыдача не должна останавливать прогрев
                 log.exception("Ошибка автовыдачи урока")
+        if self._ticks % self.heal_every_ticks == 0:
+            try:
+                healed = await self.funnel.heal_stranded(int(self.now()))
+                if healed:
+                    log.warning("Самолечение очереди: восстановлена цепочка у %s чел.", healed)
+            except Exception:  # noqa: BLE001 — лечение не должно останавливать отправку
+                log.exception("Ошибка самолечения очереди")
+        self._ticks += 1
         allowed = await allowed_user_ids(self.settings, self.funnel.admin_ids)
         rows = await self.funnel.due_steps(int(self.now()), limit=BATCH, only_users=allowed)
         reminded: set[int] = set()
@@ -136,7 +147,7 @@ class Scheduler:
                 stats["held"] += 1
                 return
 
-        if preprod and row["attempts"] == 0:
+        if preprod and not await self._note_already_sent(row):
             await self._send_timing_note(row)
         outcome = await send_block(
             block_from_row(row),
@@ -160,6 +171,11 @@ class Scheduler:
             else:
                 await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, outcome.error)
                 stats["failed"] += 1
+
+    async def _note_already_sent(self, row) -> bool:
+        if self.sent_log is None:
+            return row["attempts"] > 0
+        return await self.sent_log.has(row["user_id"], "step", row["step_id"])
 
     async def _send_timing_note(self, row) -> None:
         """Предпрод: перед постом — беззвучная пометка «когда это пришло бы человеку»."""

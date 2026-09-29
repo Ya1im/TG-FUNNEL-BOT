@@ -147,6 +147,11 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
     )
     await deps.sent_log.delete_since(since, keep_users=keep)
     if cancel_pending:
+        # в цепочке срок есть только у головного шага: отменяя его, надо назначить срок следующему,
+        # иначе у человека не останется ни одного шага с временем и воронка замрёт навсегда
+        rows = await deps.db.fetchall(
+            "SELECT DISTINCT user_id FROM user_steps WHERE status = 'pending' AND due_at <= ?", (now,)
+        )
         cur = await deps.db.conn.execute(
             "UPDATE user_steps SET status = 'skipped', last_error = 'отозвано' "
             "WHERE status = 'pending' AND due_at <= ?",
@@ -154,4 +159,7 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
         )
         await deps.db.conn.commit()
         result["cancelled"] = cur.rowcount or 0
+        funnel = getattr(deps, "funnel", None)
+        if funnel is not None:
+            await funnel.normalize_users([r["user_id"] for r in rows], now)
     return result

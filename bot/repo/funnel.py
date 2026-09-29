@@ -144,6 +144,22 @@ class FunnelRepo:
         rows = await self.db.fetchall("SELECT DISTINCT user_id FROM user_steps WHERE status = 'pending'")
         return await self.normalize_users([r["user_id"] for r in rows], now, rebase_overdue)
 
+    async def heal_stranded(self, now: int | None = None) -> int:
+        """Самолечение: у человека есть ожидающие включённые шаги, но ни у одного нет срока
+        (сбой между закрытием шага и назначением следующего). Назначаем «сейчас + задержка»."""
+        rows = await self.db.fetchall(
+            "SELECT DISTINCT us.user_id FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.status = 'pending' AND fs.enabled = 1 AND NOT EXISTS ("
+            "SELECT 1 FROM user_steps u2 JOIN funnel_steps f2 ON f2.id = u2.step_id "
+            "WHERE u2.user_id = us.user_id AND u2.status = 'pending' AND f2.enabled = 1 "
+            "AND u2.due_at < ?)",
+            (NOT_SCHEDULED,),
+        )
+        ids = [r["user_id"] for r in rows]
+        if ids:
+            await self.normalize_users(ids, now)
+        return len(ids)
+
     async def rebase_overdue_heads(self, now: int | None = None) -> int:
         """Выпуск в продакшен/старт после простоя: просроченные головные шаги — на «сейчас + задержка»."""
         return await self.normalize_all(now, rebase_overdue=True)

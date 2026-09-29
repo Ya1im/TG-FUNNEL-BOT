@@ -105,3 +105,17 @@ async def test_init_chain_rebases_once_and_never_sends_burst(db):
     bot = Bot()
     sched = Scheduler(bot=bot, users=users, funnel=funnel, settings=settings, gate=Gate(), now=lambda: 1_000_001)
     assert (await sched.tick())["sent"] == 0
+
+
+async def test_note_sent_once_even_after_postponed_attempt(db):
+    """Шаг с подпиской: до отправки поста были попытки (attempts>0), пометка всё равно должна прийти — один раз."""
+    users, funnel, ids = await setup(db)
+    await db.execute("UPDATE user_steps SET attempts = 2")
+    bot, log = Bot(), SentLogRepo(db)
+    sched = Scheduler(bot=bot, users=users, funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      sent_log=log, now=lambda: 5000)
+    row = (await funnel.due_steps(5000))[0]
+    stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
+    await sched._process(row, stats, set(), preprod=True)
+    assert [t for _, t, _ in bot.sent][0].startswith("🧪")
+    assert await sched._note_already_sent(row) is True

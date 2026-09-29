@@ -1,6 +1,8 @@
 """Хендлеры пользователя: /start, проверка подписки, /reset."""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 
 from aiogram import F, Router
@@ -9,7 +11,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Message
 
 from bot.deps import Deps
-from bot.keyboards import CHECK_CALLBACK
+from bot.keyboards import CHECK_CALLBACK, link_kb
 from bot.services import (
     check_subscription_flow,
     send_welcome,
@@ -58,6 +60,28 @@ async def cb_check_subscription(call: CallbackQuery, deps: Deps) -> None:
         await call.answer(await deps.settings.get("subscribed_ok_alert"))
     else:
         await call.answer(await deps.settings.get("not_subscribed_alert"), show_alert=True)
+
+
+@router.callback_query(F.data.startswith("lc:"))
+async def cb_legacy_lesson_button(call: CallbackQuery, deps: Deps) -> None:
+    """Кнопки «клик» жили меньше суток; у уже отправленных сообщений они остались.
+    Учёта клика больше нет — просто присылаем настоящую ссылку."""
+    digest = call.data[3:]
+    rows = list(await deps.funnel.list_steps()) + list(await deps.material.list_blocks())
+    for row in rows:
+        try:
+            buttons = json.loads(row["buttons_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        for btn in buttons:
+            url = btn.get("url") or ""
+            if url and hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] == digest:
+                await call.answer()
+                await call.message.answer(
+                    "Вот ссылка 👇", reply_markup=link_kb(btn.get("text") or "Открыть", url)
+                )
+                return
+    await call.answer("Ссылка устарела. Напишите /start", show_alert=True)
 
 
 async def _sync_admin_commands(message: Message, deps: Deps) -> None:

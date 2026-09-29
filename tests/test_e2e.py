@@ -1387,6 +1387,21 @@ async def test_funnel_test_run_enables_fast_mode(stack):
 
 
 
+async def test_legacy_lc_button_still_delivers_link(stack):
+    """Кнопки «клик» жили меньше суток; у уже отправленных сообщений они не должны быть мёртвыми."""
+    import hashlib
+
+    dp, bot, session, deps = stack
+    url = "https://tkpdt.ru/lendingi150"
+    await deps.funnel.add_step(3600, text="Пуш", buttons=[{"text": "Смотреть урок", "url": url}])
+    digest = hashlib.sha1(url.encode()).hexdigest()[:16]
+    await feed(dp, bot, callback=make_callback(f"lc:{digest}"))
+    assert session.calls("SendMessage")[-1].reply_markup.inline_keyboard[0][0].url == url
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("lc:0000000000000000"))
+    assert "устарела" in " ".join(str(getattr(r, "text", "")) for r in session.requests)
+
+
 # --- предпрод и отзыв публикаций ------------------------------------------
 
 

@@ -23,6 +23,11 @@ class SentLogRepo:
         )
         await self.db.conn.commit()
 
+    async def has(self, user_id: int, kind: str, ref_id: int) -> bool:
+        return bool(await self.db.fetchval(
+            "SELECT COUNT(*) FROM sent_messages WHERE user_id = ? AND kind = ? AND ref_id = ?",
+            (user_id, kind, ref_id), default=0))
+
     async def since(self, since: int):
         return await self.db.fetchall(
             "SELECT id, user_id, message_id, kind, ref_id, sent_at FROM sent_messages "

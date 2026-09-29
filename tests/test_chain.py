@@ -186,3 +186,29 @@ async def test_fast_mode_chain_is_ten_seconds_per_step(db):
     assert (await dues(db))[0][0] == FAST_STEP_SECONDS
     await funnel.mark_sent((await funnel.due_steps(now=100))[0]["queue_id"], now=100)
     assert (await dues(db))[1][0] == 100 + FAST_STEP_SECONDS
+
+
+async def test_heal_stranded_restores_chain_after_crash(db):
+    """Сбой между «шаг отправлен» и «назначен срок следующему»: у человека ни одного срока."""
+    funnel = FunnelRepo(db)
+    await user(db)
+    await steps(funnel, 100, 500)
+    await funnel.enqueue(1, now=0)
+    await db.execute("UPDATE user_steps SET status = 'sent', sent_at = 100 WHERE id = (SELECT MIN(id) FROM user_steps)")
+    assert await funnel.due_steps(now=8_000_000_000) == []      # застряли
+    assert await funnel.heal_stranded(now=1000) == 1
+    assert (await dues(db))[1][0] == 1500
+    assert await funnel.heal_stranded(now=1000) == 0             # здоровых не трогает
+
+
+async def test_scheduler_heals_on_first_tick(db):
+    funnel = FunnelRepo(db)
+    await user(db)
+    await steps(funnel, 100, 500)
+    await funnel.enqueue(1, now=0)
+    await db.execute("UPDATE user_steps SET status = 'sent', sent_at = 100 WHERE id = (SELECT MIN(id) FROM user_steps)")
+    bot = Bot()
+    sched = Scheduler(bot=bot, users=UsersRepo(db), funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      now=lambda: 1000)
+    await sched.tick()
+    assert (await dues(db))[1][0] == 1500
