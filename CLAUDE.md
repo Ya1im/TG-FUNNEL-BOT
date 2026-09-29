@@ -342,6 +342,18 @@ docs/client-guide/generate_pdf.py`) → закоммитить оба файла
   Y — сумма задержек включённых шагов. Номера пометок пишутся в журнал (отзываются вместе с постом).
 - Колонки добавляются через `Database._migrate` и лежат в `schema.sql` (старые базы дополняются сами).
 
+## Панель тестового прогона /test (30.09.2026)
+
+Спека: `docs/superpowers/specs/2026-09-30-test-panel-design.md`. Тестировщик = `preprod.tester_ids`: владельцы (ADMIN_IDS) ∪
+`viewers.role='admin'` ∪ `preprod_user_ids`; `allowed_user_ids(settings, admin_ids, db)` (нужен db для ролей!) пускает в предпрод именно
+их. Хендлер `bot/handlers/tester.py` (`/test`, `t:*`, кнопка `t:open` в главном меню админки и в «Прогреве»), текст панели —
+`bot/tester.py`. Кнопки: `t:new` = `users.reset` + `send_welcome`; `t:lesson` = `deliver_material_once(send_invite=False)`;
+`t:next` = `FunnelRepo.skip_wait` + `Scheduler.run_user` (прямая отправка, без ожидания тика); `t:fast`/`t:real` = `FunnelRepo.set_fast`
+(пересчитывает срок головного шага). Пока есть ожидающий шаг с `funnel_fast=1`, планировщик спит 10 с вместо 60
+(`Scheduler._sleep_seconds`). Пометка `timing_note` — только тестировщикам и только при включённом предпроде (в продакшене её нет
+ни у кого). Права: роль admin может добавлять тестовые аккаунты, включать предпрод и делать отзыв; «Выпустить в продакшен»
+(`a:pre:off`) — только `require_owner`. Кнопки «Прогнать на себе» и `a:fun:test` удалены.
+
 ## Отзыв публикаций и предпрод (30.09.2026)
 
 Зачем: инцидент 29–30.09 — после внесения шагов в живого бота `backfill_step` поставил их всем, кто уже
