@@ -126,11 +126,18 @@ async def subscription_screen(target, deps, is_owner: bool) -> None:
     title = html.escape((await settings.get("channel_title")).strip())
     url = html.escape((await settings.get("channel_url")).strip())
     private = (await settings.get("private_channel_id")).strip()
+    minutes = await settings.get_int("auto_deliver_minutes") or 0
+    auto_line = (
+        f"если человек нажал /start и не получил урок, бот выдаст его сам через {minutes} мин"
+        if minutes > 0 else "выключена"
+    )
+    auto_button = f"{minutes} мин" if minutes > 0 else "выкл"
     body = (
         f"{OK if channel else WARN} Канал: {('<code>%s</code>' % channel) if channel else 'не задан'}"
         f"{' — ' + title if title else ''}\n"
         f"🔗 Ссылка: {url or 'нет'}\n"
-        f"🔒 Закрытый канал: {('<code>%s</code>' % private) if private else 'не задан'}"
+        f"🔒 Закрытый канал: {('<code>%s</code>' % private) if private else 'не задан'}\n"
+        f"⏱ Автовыдача урока: {auto_line}"
     )
     rows = []
     if is_owner:
@@ -138,6 +145,7 @@ async def subscription_screen(target, deps, is_owner: bool) -> None:
         # у всех подписчиков разом), роли admin недоступна; правка текстов — можно.
         rows.append([("📢 Канал для проверки", "a:set:channel")])
         rows.append([("🔒 Закрытый канал", "a:set:private")])
+    rows.append([(f"⏱ Автовыдача урока: {auto_button}", "a:set:t:auto_deliver_minutes")])
     rows.append([("✏️ Тексты и кнопки", "a:set:texts:sub")])
     rows.append([("⬅️ Назад", "a:flow")])
     await show(

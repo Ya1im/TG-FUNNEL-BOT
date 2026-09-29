@@ -332,8 +332,8 @@ docs/client-guide/generate_pdf.py`) → закоммитить оба файла
 Спеки: `docs/superpowers/specs/2026-09-29-funnel-click-branching-design.md` (автовыдача; клик оттуда удалён),
 `docs/superpowers/specs/2026-09-30-relative-chain-design.md`; планы в `docs/plans/`.
 
-- **Автовыдача**: настройка `auto_deliver_minutes` (по умолчанию 60, 0 — выкл; «Настройки» →
-  «Проверка подписки»), `Scheduler.deliver_hook` = `services.auto_deliver_due`.
+- **Автовыдача**: настройка `auto_deliver_minutes` (по умолчанию 60, 0 — выкл; кнопка «⏱ Автовыдача урока» на экране
+  «Воронка» → «Проверка подписки», `a:set:t:auto_deliver_minutes`), `Scheduler.deliver_hook` = `services.auto_deliver_due`.
 - **Цепочка**: см. грабли №16. В админке «Через» на шаге = через сколько после предыдущего поста (у первого —
   после выдачи материала). Воронка заказчика вносится относительными задержками: 30м, 2ч, 6ч, 12ч, 12ч, 12ч, 12ч,
   12ч, 12ч, 2ч, 12ч, 12ч, 12ч, 12ч, 24ч.

@@ -1630,3 +1630,21 @@ async def test_role_admin_test_account_is_not_in_stats_or_segments(stack):
     await deps.db.execute("UPDATE users SET material_sent_at = 5 WHERE tg_id = 600")
     assert (await deps.users.stats())["total"] == 0
     assert await deps.users.segment_ids("all") == []
+
+
+async def test_subscription_screen_has_auto_delivery_button(stack):
+    """Автовыдача урока настраивается прямо на экране «Проверка подписки», а не в глубине списка текстов."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:flow:sub", user_id=ADMIN_ID))
+    assert "a:set:t:auto_deliver_minutes" in _all_callbacks(session)
+    assert "выдаст его сам через 60 мин" in _texts(session)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set:t:auto_deliver_minutes", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("0", user_id=ADMIN_ID, message_id=90))
+    assert await deps.settings.get_int("auto_deliver_minutes") == 0
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:flow:sub", user_id=ADMIN_ID))
+    assert "Автовыдача урока: выключена" in _texts(session)
+    assert "Автовыдача урока: выкл" in " ".join(
+        b.text for r in session.requests if getattr(r, "reply_markup", None) for row in r.reply_markup.inline_keyboard for b in row
+    )
