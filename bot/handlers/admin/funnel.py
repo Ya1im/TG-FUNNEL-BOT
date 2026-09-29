@@ -26,7 +26,7 @@ from bot.handlers.admin.common import (
 
 router = Router(name="admin-funnel")
 
-HINT = "Сообщения по расписанию после выдачи материала. 🔒 — только подписанным."
+HINT = "Каждый пост идёт через своё время после ПРЕДЫДУЩЕГО (первый — после выдачи материала). 🔒 — только подписанным."
 
 
 async def funnel_screen(target, deps) -> None:
@@ -76,7 +76,7 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
         return
     text = (
         f"🔥 <b>Шаг прогрева</b>\n\n"
-        f"⏱ Через: {human_delay(step['delay_seconds'])}\n"
+        f"⏱ Через: {human_delay(step['delay_seconds'])} после предыдущего поста\n"
         f"⚡️ Статус: {'включён' if step['enabled'] else 'выключен'}\n"
         f"🔒 Только подписчикам: {'да' if step['requires_subscription'] else 'нет'}\n"
         + (
@@ -250,7 +250,8 @@ async def cb_step_delay(call: CallbackQuery, state: FSMContext) -> None:
     await show(
         call,
         "⏱ <b>Задержка шага</b>\n\n"
-        "Через сколько после выдачи материала слать этот шаг?\n\n"
+        "Через сколько после ПРЕДЫДУЩЕГО поста слать этот шаг? "
+        "У первого шага — после выдачи материала.\n\n"
         "Примеры: <code>30м</code>, <code>2ч</code>, <code>3д</code>, <code>1д 4ч</code>.",
         kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
     )
@@ -278,7 +279,8 @@ async def cb_step_add(call: CallbackQuery, state: FSMContext) -> None:
     await show(
         call,
         "➕ <b>Новый шаг прогрева</b>\n\n"
-        "Через сколько после выдачи материала слать этот шаг?\n\n"
+        "Через сколько после ПРЕДЫДУЩЕГО поста слать этот шаг? "
+        "У первого шага — после выдачи материала.\n\n"
         "Примеры: <code>30м</code>, <code>2ч</code>, <code>3д</code>, <code>1д 4ч</code>.",
         kb([[("⬅️ Отмена", "a:fun")]]),
     )
