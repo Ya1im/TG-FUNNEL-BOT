@@ -1,14 +1,13 @@
 """Сценарии пользователя: старт, проверка подписки, выдача материала."""
 from __future__ import annotations
 
-import json
 import logging
 import time
 
 from aiogram.exceptions import TelegramAPIError
 
 from bot.preprod import allowed_user_ids
-from bot.content import ContentBlock, apply_placeholders, button_hash
+from bot.content import ContentBlock, apply_placeholders
 from bot.keyboards import link_kb, subscribe_kb
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
@@ -118,7 +117,7 @@ async def deliver_material(bot, deps, chat_id: int, send_invite: bool = True) ->
             return False
 
     for row in await deps.material.list_blocks(only_enabled=True):
-        block = block_from_row(row, track=True)
+        block = block_from_row(row)
         if block.is_empty:
             continue
         outcome = await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
@@ -130,12 +129,6 @@ async def deliver_material(bot, deps, chat_id: int, send_invite: bool = True) ->
 
     await deps.users.mark_material_sent(chat_id)
     await deps.funnel.enqueue(chat_id)
-    # Клик мог случиться раньше, чем очередь построилась (кнопка уходит в материале) — применяем его сейчас
-    user = await deps.users.get(chat_id)
-    if user and user["lesson_clicked_at"]:
-        await deps.funnel.apply_click(
-            chat_id, int(user["lesson_clicked_at"]), fast=bool(user["funnel_fast"])
-        )
     return True
 
 
@@ -217,39 +210,3 @@ async def check_subscription_flow(bot, deps, user_id: int, chat_id: int) -> bool
             await send_private_invite(bot, deps, chat_id)
         return True
     return False
-
-
-# --- клик по кнопке урока -------------------------------------------------
-
-
-async def find_tracked_url(deps, digest: str) -> str | None:
-    """URL кнопки «клик» по хешу из callback_data — среди шагов прогрева и блоков материала."""
-    rows = list(await deps.funnel.list_steps()) + list(await deps.material.list_blocks())
-    for row in rows:
-        try:
-            buttons = json.loads(row["buttons_json"] or "[]")
-        except (ValueError, TypeError):
-            continue
-        for btn in buttons:
-            url = btn.get("url") or ""
-            # признак track не проверяем: админ мог убрать «| клик», а старые сообщения ещё живы
-            if url and button_hash(url) == digest:
-                return url
-    return None
-
-
-async def record_click(deps, user_id: int, now: int | None = None) -> bool:
-    """Единая точка учёта клика: пишет первый клик и перестраивает воронку.
-
-    Возвращает True только для первого клика. Сюда же позже можно подвести
-    отслеживаемую ссылку через собственный домен — ветвление от этого не изменится."""
-    now = int(now if now is not None else time.time())
-    if not await deps.users.mark_lesson_clicked(user_id, now):
-        return False
-    user = await deps.users.get(user_id)
-    try:
-        await deps.funnel.apply_click(user_id, now, fast=bool(user["funnel_fast"]))
-    except Exception:
-        await deps.users.clear_click(user_id)  # чтобы следующий клик попробовал ещё раз
-        raise
-    return True

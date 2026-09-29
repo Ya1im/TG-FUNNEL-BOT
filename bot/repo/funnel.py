@@ -8,6 +8,9 @@ from bot.content import ContentBlock
 from bot.db import Database
 
 FAST_STEP_SECONDS = 10  # «прогнать на себе»: задержки по 10 секунд
+# Срок у шага, до которого очередь ещё не дошла: срок появляется, когда закрыт предыдущий шаг
+NOT_SCHEDULED = 9_000_000_000
+_CHUNK = 400
 
 
 class FunnelRepo:
@@ -26,8 +29,6 @@ class FunnelRepo:
         requires_subscription: bool = False,
         on_unsub: str = "skip",
         backfill: bool = True,
-        stop_on_click: bool = False,
-        after_click_seconds: int | None = None,
     ) -> int:
         """backfill=False — массовая загрузка всей цепочки разом (import_json, seed): здесь это не
         «добавили один новый шаг», а пересборка с нуля, задним числом никому ничего не шлём."""
@@ -36,8 +37,8 @@ class FunnelRepo:
         )
         step_id = await self.db.execute(
             "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
-            "text, media_id, buttons_json, enabled, created_at, stop_on_click, after_click_seconds) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+            "text, media_id, buttons_json, enabled, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 position,
                 int(delay_seconds),
@@ -47,35 +48,108 @@ class FunnelRepo:
                 media_id,
                 json.dumps(buttons or [], ensure_ascii=False),
                 int(time.time()),
-                1 if stop_on_click else 0,
-                int(after_click_seconds) if after_click_seconds is not None else None,
             ),
         )
         if backfill:
-            await self.backfill_step(step_id, position, int(delay_seconds))
+            await self.backfill_step(step_id)
         return step_id
 
-    async def backfill_step(self, step_id: int, position: int, delay_seconds: int) -> int:
+    async def backfill_step(
+        self, step_id: int, position: int | None = None, delay_seconds: int | None = None,
+        now: int | None = None,
+    ) -> int:
         """Ставит уже существующим активным пользователям только что созданный/включённый шаг —
-        по их личной дате получения материала, минуя тех, кто уже получил более поздний шаг."""
+        минуя тех, кто уже получил более поздний шаг. Срок у него появится, когда до него дойдёт
+        очередь: тем, у кого цепочка закончена, — «через задержку шага после добавления»."""
+        now = int(now if now is not None else time.time())
         step = await self.get_step(step_id)
-        stop_on_click = int(step["stop_on_click"]) if step is not None else 0
+        if step is None:
+            return 0
+        pos = int(step["position"])
+        later_sent = (
+            "EXISTS (SELECT 1 FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.user_id = {uid} AND fs.position > ? AND us.status = 'sent')"
+        )
+        # шаг, включённый заново: устаревшую строку тем, кто ушёл дальше, не оживляем
+        await self.db.conn.execute(
+            "UPDATE user_steps SET status = 'skipped', last_error = 'уже получил более поздний шаг' "
+            "WHERE step_id = ? AND status = 'pending' AND " + later_sent.format(uid="user_steps.user_id"),
+            (step_id, pos),
+        )
         cur = await self.db.conn.execute(
             "INSERT OR IGNORE INTO user_steps(user_id, step_id, due_at, status) "
-            "SELECT u.tg_id, ?, u.material_sent_at + ?, 'pending' FROM users u "
+            "SELECT u.tg_id, ?, ?, 'pending' FROM users u "
             "WHERE u.material_sent_at IS NOT NULL AND u.status = 'active' "
-            # пуш «отменяется после клика» тем, кто уже кликнул, ставить незачем
-            "AND (? = 0 OR u.lesson_clicked_at IS NULL) "
-            "AND NOT EXISTS (SELECT 1 FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
-            "WHERE us.user_id = u.tg_id AND fs.position > ? AND us.status = 'sent')",
-            (step_id, int(delay_seconds), stop_on_click, int(position)),
+            "AND NOT " + later_sent.format(uid="u.tg_id"),
+            (step_id, NOT_SCHEDULED, pos),
         )
+        added = cur.rowcount or 0
         await self.db.conn.commit()
-        return cur.rowcount or 0
+        affected = await self._users_with_pending(step_id)
+        await self.normalize_users(affected, now)
+        return added
+
+    async def _users_with_pending(self, step_id: int) -> list[int]:
+        rows = await self.db.fetchall(
+            "SELECT DISTINCT user_id FROM user_steps WHERE step_id = ? AND status = 'pending'", (step_id,)
+        )
+        return [r["user_id"] for r in rows]
+
+    async def normalize_users(
+        self, user_ids, now: int | None = None, rebase_overdue: bool = False
+    ) -> int:
+        """Приводит очередь людей к цепочке: срок есть только у головного шага — первого
+        ожидающего включённого; у остальных срок «пока не назначен». Если головной шаг ещё без срока —
+        он назначается «сейчас + задержка шага» (в быстром режиме — 10 секунд).
+
+        rebase_overdue=True — головные шаги с уже прошедшим сроком переносятся на «сейчас + задержка»
+        (запуск после простоя/предпрода: отсчёт от момента запуска, без залпа).
+        Возвращает, сколько сроков перенесено."""
+        now = int(now if now is not None else time.time())
+        ids = list(dict.fromkeys(int(u) for u in user_ids))
+        rebased = 0
+        conn = self.db.conn
+        for start in range(0, len(ids), _CHUNK):
+            chunk = ids[start : start + _CHUNK]
+            marks = ",".join("?" for _ in chunk)
+            rows = await self.db.fetchall(
+                "SELECT us.id, us.user_id, us.due_at, fs.enabled, fs.delay_seconds, u.funnel_fast "
+                "FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+                "JOIN users u ON u.tg_id = us.user_id "
+                f"WHERE us.status = 'pending' AND us.user_id IN ({marks}) "
+                "ORDER BY us.user_id, fs.position, fs.id",
+                chunk,
+            )
+            updates: list[tuple[int, int]] = []
+            seen_head: set[int] = set()
+            for row in rows:
+                is_head = row["enabled"] and row["user_id"] not in seen_head
+                if not is_head:
+                    if row["due_at"] != NOT_SCHEDULED:
+                        updates.append((NOT_SCHEDULED, row["id"]))
+                    continue
+                seen_head.add(row["user_id"])
+                delay = FAST_STEP_SECONDS if row["funnel_fast"] else int(row["delay_seconds"])
+                if row["due_at"] >= NOT_SCHEDULED:
+                    updates.append((now + delay, row["id"]))
+                elif rebase_overdue and row["due_at"] < now:
+                    updates.append((now + delay, row["id"]))
+                    rebased += 1
+            if updates:
+                await conn.executemany("UPDATE user_steps SET due_at = ? WHERE id = ?", updates)
+        await conn.commit()
+        return rebased
+
+    async def normalize_all(self, now: int | None = None, rebase_overdue: bool = False) -> int:
+        rows = await self.db.fetchall("SELECT DISTINCT user_id FROM user_steps WHERE status = 'pending'")
+        return await self.normalize_users([r["user_id"] for r in rows], now, rebase_overdue)
+
+    async def rebase_overdue_heads(self, now: int | None = None) -> int:
+        """Выпуск в продакшен/старт после простоя: просроченные головные шаги — на «сейчас + задержка»."""
+        return await self.normalize_all(now, rebase_overdue=True)
 
     async def update_step(self, step_id: int, **fields) -> None:
-        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position",
-               "stop_on_click", "after_click_seconds"}
+        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
         before = await self.get_step(step_id) if "enabled" in fields else None
         sets, params = [], []
         for key, value in fields.items():
@@ -87,7 +161,12 @@ class FunnelRepo:
         params.append(step_id)
         await self.db.execute(f"UPDATE funnel_steps SET {', '.join(sets)} WHERE id = ?", params)
         if before is not None and int(before["enabled"]) == 0 and int(fields["enabled"]) == 1:
-            await self.backfill_step(step_id, before["position"], before["delay_seconds"])
+            await self.backfill_step(step_id)
+        elif before is not None and int(before["enabled"]) == 1 and int(fields["enabled"]) == 0:
+            # выключенный шаг не должен держать цепочку
+            await self.normalize_users(await self._users_with_pending(step_id))
+        elif "position" in fields:
+            await self.normalize_all()
 
     async def get_step(self, step_id: int):
         return await self.db.fetchone("SELECT * FROM funnel_steps WHERE id = ?", (step_id,))
@@ -101,8 +180,10 @@ class FunnelRepo:
         )
 
     async def delete_step(self, step_id: int) -> None:
+        affected = await self._users_with_pending(step_id)
         await self.db.execute("DELETE FROM user_steps WHERE step_id = ?", (step_id,))
         await self.db.execute("DELETE FROM funnel_steps WHERE id = ?", (step_id,))
+        await self.normalize_users(affected)
 
     async def move_step(self, step_id: int, direction: int) -> None:
         """Поменять шаг местами с соседним (direction: -1 вверх, +1 вниз)."""
@@ -117,20 +198,21 @@ class FunnelRepo:
         ids[idx], ids[new_idx] = ids[new_idx], ids[idx]
         for position, sid in enumerate(ids, start=1):
             await self.db.execute("UPDATE funnel_steps SET position = ? WHERE id = ?", (position, sid))
+        await self.normalize_all()
 
     # --- очередь ----------------------------------------------------------
 
     async def enqueue(self, user_id: int, fast: bool = False, now: int | None = None) -> int:
-        """Поставить пользователю все включённые шаги. Повтор не плодит дубли."""
+        """Поставить пользователю все включённые шаги. Повтор не плодит дубли.
+        Срок получает только первый шаг — «сейчас + его задержка»; остальные — по цепочке."""
         now = int(now if now is not None else time.time())
         steps = await self.list_steps(only_enabled=True)
         created = 0
-        for order, step in enumerate(steps, start=1):
-            delay = FAST_STEP_SECONDS * order if fast else int(step["delay_seconds"])
+        for step in steps:
             cur = await self.db.conn.execute(
                 "INSERT OR IGNORE INTO user_steps(user_id, step_id, due_at, status) "
                 "VALUES(?, ?, ?, 'pending')",
-                (user_id, step["id"], now + delay),
+                (user_id, step["id"], NOT_SCHEDULED),
             )
             created += cur.rowcount or 0
         if fast or created:
@@ -139,41 +221,11 @@ class FunnelRepo:
                 "UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id)
             )
         await self.db.conn.commit()
+        await self.normalize_users([user_id], now)
         return created
 
-    async def apply_click(self, user_id: int, click_at: int, fast: bool = False) -> None:
-        """Первый клик по уроку: пуши «отменяются при клике» пропускаем, основную цепочку
-        переносим на «клик + N» с сохранением интервалов между постами."""
-        rows = await self.db.fetchall(
-            "SELECT us.id AS uid, us.due_at, fs.stop_on_click, fs.after_click_seconds "
-            "FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
-            "WHERE us.user_id = ? AND us.status = 'pending' ORDER BY fs.position, fs.id",
-            (user_id,),
-        )
-        skip = [r["uid"] for r in rows if r["stop_on_click"]]
-        rest = [r for r in rows if not r["stop_on_click"]]
-        conn = self.db.conn
-        for uid in skip:
-            await conn.execute(
-                "UPDATE user_steps SET status = 'skipped', last_error = 'клик по уроку' WHERE id = ?",
-                (uid,),
-            )
-        anchor_idx = next((i for i, r in enumerate(rest) if r["after_click_seconds"] is not None), None)
-        if anchor_idx is not None:
-            anchor = rest[anchor_idx]
-            after = FAST_STEP_SECONDS if fast else int(anchor["after_click_seconds"])
-            anchor_due = int(click_at) + after
-            delta = anchor_due - int(anchor["due_at"])
-            for r in rest[anchor_idx:]:
-                # ниже якоря не уходим: шаг после призыва не должен прийти раньше него
-                await conn.execute(
-                    "UPDATE user_steps SET due_at = ? WHERE id = ?",
-                    (max(int(r["due_at"]) + delta, anchor_due), r["uid"]),
-                )
-        await conn.commit()
-
     async def still_due(self, queue_id: int, now: int | None = None) -> bool:
-        """Строку могли пропустить или сдвинуть (клик) уже после выборки пачки в тике."""
+        """Строку могли пропустить или перенести уже после выборки пачки в тике."""
         now = int(now if now is not None else time.time())
         return (
             await self.db.fetchval(
@@ -213,11 +265,18 @@ class FunnelRepo:
             params,
         )
 
-    async def mark_sent(self, queue_id: int) -> None:
+    async def mark_sent(self, queue_id: int, now: int | None = None) -> None:
+        now = int(now if now is not None else time.time())
         await self.db.execute(
-            "UPDATE user_steps SET status = 'sent', sent_at = ? WHERE id = ?",
-            (int(time.time()), queue_id),
+            "UPDATE user_steps SET status = 'sent', sent_at = ? WHERE id = ?", (now, queue_id)
         )
+        await self._advance(queue_id, now)
+
+    async def _advance(self, queue_id: int, now: int) -> None:
+        """Шаг закрыт — следующий по цепочке получает срок «сейчас + его задержка»."""
+        user_id = await self.db.fetchval("SELECT user_id FROM user_steps WHERE id = ?", (queue_id,))
+        if user_id is not None:
+            await self.normalize_users([user_id], now)
 
     async def postpone(self, queue_id: int, seconds: int, error: str | None = None) -> None:
         await self.db.execute(
@@ -225,11 +284,15 @@ class FunnelRepo:
             (int(time.time()) + int(seconds), error, queue_id),
         )
 
-    async def finish(self, queue_id: int, status: str, error: str | None = None) -> None:
+    async def finish(
+        self, queue_id: int, status: str, error: str | None = None, now: int | None = None
+    ) -> None:
+        now = int(now if now is not None else time.time())
         await self.db.execute(
             "UPDATE user_steps SET status = ?, last_error = ?, attempts = attempts + 1 WHERE id = ?",
             (status, error, queue_id),
         )
+        await self._advance(queue_id, now)
 
     async def pending_count(self, user_id: int | None = None) -> int:
         if user_id is None:
@@ -262,8 +325,6 @@ class FunnelRepo:
                 "media_slug": s["media_slug"],
                 "buttons": json.loads(s["buttons_json"] or "[]"),
                 "enabled": bool(s["enabled"]),
-                "stop_on_click": bool(s["stop_on_click"]),
-                "after_click_seconds": s["after_click_seconds"],
             }
             for s in steps
         ]
@@ -289,8 +350,6 @@ class FunnelRepo:
                 # старые выгрузки без поля напоминали автоматически — не меняем это молча
                 on_unsub=item.get("on_unsub") or ("remind" if item.get("requires_subscription") else "skip"),
                 backfill=False,  # массовая пересборка цепочки — не «добавили новый шаг»
-                stop_on_click=bool(item.get("stop_on_click")),
-                after_click_seconds=item.get("after_click_seconds"),
             )
             if not item.get("enabled", True):
                 await self.update_step(step_id, enabled=0)
@@ -298,10 +357,8 @@ class FunnelRepo:
         return count
 
 
-def block_from_row(row, track: bool = False) -> ContentBlock:
-    """Собрать ContentBlock из строки очереди или списка шагов.
-
-    track=True — кнопки с признаком «клик» станут callback-кнопками (только шаги прогрева и материал)."""
+def block_from_row(row) -> ContentBlock:
+    """Собрать ContentBlock из строки очереди или списка шагов."""
     buttons = []
     raw = row["buttons_json"]
     if raw:
@@ -314,7 +371,6 @@ def block_from_row(row, track: bool = False) -> ContentBlock:
         media_kind=row["media_kind"],
         file_id=row["media_file_id"],
         buttons=buttons,
-        track=track,
     )
 
 

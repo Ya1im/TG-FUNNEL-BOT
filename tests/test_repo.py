@@ -165,8 +165,6 @@ async def test_reset_clears_click_and_claim(db):
     assert row["funnel_fast"] == 0
 
 
-async def test_settings_defaults_click_and_autodeliver(db):
+async def test_settings_defaults_autodeliver(db):
     settings = SettingsRepo(db)
     assert await settings.get("auto_deliver_minutes") == "60"
-    assert await settings.get("lesson_link_text") == "Вот урок 👇"
-    assert await settings.get("lesson_link_btn") == "Открыть урок"

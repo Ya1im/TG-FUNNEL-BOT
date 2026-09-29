@@ -72,12 +72,6 @@ class FunnelEditDelay(StatesGroup):
     waiting_value = State()
 
 
-class FunnelEditClickDelay(StatesGroup):
-    """Задержка «после клика» у шага-призыва."""
-
-    waiting_value = State()
-
-
 class FunnelEditContent(StatesGroup):
     """Правка уже существующего шага прогрева — текст/медиа или кнопки отдельно."""
 
@@ -246,23 +240,18 @@ async def capture_content(deps, message: Message, slug_prefix: str) -> tuple[str
 
 
 def parse_buttons(raw: str) -> list[dict]:
-    """«Текст | https://ссылка» построчно; третье поле «клик» включает учёт нажатия."""
+    """«Текст | https://ссылка» построчно. Лишнее третье поле-слово (например, старое «клик») игнорируем."""
     buttons = []
     for line in (raw or "").splitlines():
         if "|" not in line:
             continue
         text, _, rest = line.partition("|")
-        text, url, track = text.strip(), rest.strip(), False
+        text, url = text.strip(), rest.strip()
         head, sep, tail = url.rpartition("|")
-        flag = tail.strip().lower()
-        if sep and not any(ch in flag for ch in "/:."):
-            # последнее поле — слово-признак («клик»), а не кусок ссылки; неизвестные признаки игнорируем
-            url, track = head.strip(), flag == "клик"
+        if sep and not any(ch in tail for ch in "/:."):
+            url = head.strip()  # последнее поле — слово, а не кусок ссылки
         if text and url.startswith("http"):
-            button = {"text": text, "url": url}
-            if track:
-                button["track"] = True
-            buttons.append(button)
+            buttons.append({"text": text, "url": url})
     return buttons
 
 
@@ -271,7 +260,7 @@ def buttons_hint(buttons_json: str | None) -> str:
         buttons = json.loads(buttons_json or "[]")
     except (ValueError, TypeError):
         buttons = []
-    return ", ".join(b["text"] + (" 🎯" if b.get("track") else "") for b in buttons) if buttons else "нет"
+    return ", ".join(b["text"] for b in buttons) if buttons else "нет"
 
 
 KIND_ICONS = {

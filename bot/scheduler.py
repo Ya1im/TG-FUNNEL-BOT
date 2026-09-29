@@ -105,14 +105,14 @@ class Scheduler:
         queue_id = row["queue_id"]
 
         if not await self.funnel.still_due(queue_id, int(self.now())):
-            return  # пока ждали очереди, шаг пропустили или сдвинули (клик по уроку)
+            return  # пока ждали очереди, шаг пропустили или перенесли
 
         if row["requires_subscription"]:
             state = await self.gate.status(user_id, cached_seconds=GATE_CACHE_SECONDS)
             if state == "error":
                 # Telegram не ответил — это не «отписался», напоминать нельзя
                 if row["attempts"] + 1 >= ERROR_MAX_ATTEMPTS:
-                    await self.funnel.finish(queue_id, "failed", "не смог проверить подписку")
+                    await self.funnel.finish(queue_id, "failed", "не смог проверить подписку", now=int(self.now()))
                     stats["failed"] += 1
                 else:
                     await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, "не смог проверить подписку")
@@ -120,12 +120,12 @@ class Scheduler:
                 return
             if state == "no":
                 if row["on_unsub"] != "remind":
-                    await self.funnel.finish(queue_id, "skipped", "нет подписки")
+                    await self.funnel.finish(queue_id, "skipped", "нет подписки", now=int(self.now()))
                     stats["skipped"] += 1
                     return
                 max_attempts = await self._int_setting("gate_max_attempts", GATE_MAX_ATTEMPTS)
                 if row["attempts"] >= max_attempts:
-                    await self.funnel.finish(queue_id, "skipped", "нет подписки")
+                    await self.funnel.finish(queue_id, "skipped", "нет подписки", now=int(self.now()))
                     stats["skipped"] += 1
                     return
                 if user_id not in reminded:
@@ -137,7 +137,7 @@ class Scheduler:
                 return
 
         outcome = await send_block(
-            block_from_row(row, track=True),
+            block_from_row(row),
             self.bot,
             user_id,
             user=row,
@@ -147,13 +147,13 @@ class Scheduler:
         if self.sent_log is not None and outcome.message_ids:
             await self.sent_log.add(user_id, outcome.message_ids, "step", row["step_id"], int(self.now()))
         if outcome.ok:
-            await self.funnel.mark_sent(queue_id)
+            await self.funnel.mark_sent(queue_id, now=int(self.now()))
             stats["sent"] += 1
         elif outcome.status == BLOCKED:
             stats["blocked"] += 1  # очередь пользователя уже очищена в mark_blocked
         else:
             if row["attempts"] + 1 >= ERROR_MAX_ATTEMPTS:
-                await self.funnel.finish(queue_id, "failed", outcome.error)
+                await self.funnel.finish(queue_id, "failed", outcome.error, now=int(self.now()))
                 stats["failed"] += 1
             else:
                 await self.funnel.postpone(queue_id, ERROR_RETRY_SECONDS, outcome.error)

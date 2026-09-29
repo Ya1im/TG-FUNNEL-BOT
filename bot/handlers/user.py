@@ -9,13 +9,9 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Message
 
 from bot.deps import Deps
-from bot.content import CLICK_PREFIX
-from bot.keyboards import CHECK_CALLBACK, link_kb
-from bot.sender import safe_send
+from bot.keyboards import CHECK_CALLBACK
 from bot.services import (
     check_subscription_flow,
-    find_tracked_url,
-    record_click,
     send_welcome,
     start_flow,
 )
@@ -62,28 +58,6 @@ async def cb_check_subscription(call: CallbackQuery, deps: Deps) -> None:
         await call.answer(await deps.settings.get("subscribed_ok_alert"))
     else:
         await call.answer(await deps.settings.get("not_subscribed_alert"), show_alert=True)
-
-
-@router.callback_query(F.data.startswith(CLICK_PREFIX))
-async def cb_lesson_click(call: CallbackQuery, deps: Deps) -> None:
-    """Кнопка «клик»: фиксируем первый переход и присылаем настоящую ссылку."""
-    url = await find_tracked_url(deps, call.data[len(CLICK_PREFIX):])
-    if not url:
-        await call.answer("Ссылка устарела. Напишите /start", show_alert=True)
-        return
-    await call.answer()
-    text = await deps.settings.get("lesson_link_text")
-    kb = link_kb(await deps.settings.get("lesson_link_btn"), url)
-    chat_id = call.message.chat.id
-
-    async def action():
-        return await call.bot.send_message(chat_id, text, reply_markup=kb)
-
-    await safe_send(action, chat_id=chat_id, users=deps.users, limiter=deps.limiter)
-    try:
-        await record_click(deps, call.from_user.id)
-    except Exception:  # noqa: BLE001 — человек уже получил ссылку, сбой учёта не должен его беспокоить
-        log.exception("Не смог засчитать клик пользователя %s", call.from_user.id)
 
 
 async def _sync_admin_commands(message: Message, deps: Deps) -> None:

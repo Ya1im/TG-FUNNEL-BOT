@@ -34,8 +34,6 @@ TEXT_KEYS = {
     "reminder_text": "Напоминание подписаться (в прогреве)",
     "resub_reminder_text": "Напоминание подписаться (в рассылке)",
     "auto_deliver_minutes": "Выдать урок сам через N минут после /start, если не подписался (число, 0 — выключено)",
-    "lesson_link_text": "Сообщение со ссылкой после нажатия кнопки «клик»",
-    "lesson_link_btn": "Кнопка со ссылкой на урок после «клика»",
     "gate_retry_hours": "Прогрев: повторять напоминание через N часов (число)",
     "gate_max_attempts": "Прогрев: сколько раз напоминать (число)",
     # already_started_text сюда больше не входит — ответ на повторный /start
@@ -56,7 +54,7 @@ TEXT_GROUPS = {
     ),
     "material": (
         "🎁 Материал и закрытый канал",
-        ["material_intro", "private_text", "btn_private", "lesson_link_text", "lesson_link_btn"],
+        ["material_intro", "private_text", "btn_private"],
         "a:flow",
     ),
 }

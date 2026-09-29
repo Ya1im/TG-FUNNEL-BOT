@@ -1,7 +1,6 @@
 """Единица контента: текст + медиа + кнопки. Умеет превращаться в вызовы Telegram."""
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -15,22 +14,12 @@ CAPTION_LIMIT = 1024
 
 Factory = Callable[[], Awaitable[Any]]
 
-CLICK_PREFIX = "lc:"
-
-
-def button_hash(url: str) -> str:
-    """Короткий стабильный id ссылки для callback_data (сам URL в 64 байта не влезет)."""
-    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-
-
 @dataclass
 class ContentBlock:
     text: str | None = None
     media_kind: str | None = None
     file_id: str | None = None
     buttons: list[dict] = field(default_factory=list)
-    # True — кнопки с признаком track строятся как callback (учёт клика), иначе всегда ссылки
-    track: bool = False
 
     @classmethod
     def from_rows(cls, row: Any, media_row: Any = None) -> "ContentBlock":
@@ -59,12 +48,7 @@ class ContentBlock:
             url = btn.get("url")
             if not (text and url):
                 continue
-            if self.track and btn.get("track"):
-                rows.append(
-                    [InlineKeyboardButton(text=text, callback_data=f"{CLICK_PREFIX}{button_hash(url)}")]
-                )
-            else:
-                rows.append([InlineKeyboardButton(text=text, url=url)])
+            rows.append([InlineKeyboardButton(text=text, url=url)])
         return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
     def render(self, user: Any = None) -> str | None:

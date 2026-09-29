@@ -1,4 +1,4 @@
-from bot.repo.funnel import FunnelRepo, human_delay, parse_delay
+from bot.repo.funnel import NOT_SCHEDULED, FunnelRepo, human_delay, parse_delay
 from bot.repo.media import MediaRepo
 from bot.repo.users import UsersRepo
 
@@ -18,7 +18,8 @@ async def test_enqueue_creates_all_enabled_steps(db):
     created = await funnel.enqueue(1, now=1000)
     assert created == 2
     rows = await db.fetchall("SELECT step_id, due_at FROM user_steps ORDER BY due_at")
-    assert [r["due_at"] for r in rows] == [4600, 8200]
+    # срок только у первого шага; у второго — «пока не назначен», он назначится после отправки первого
+    assert [r["due_at"] for r in rows] == [4600, NOT_SCHEDULED]
     assert rows[1]["step_id"] == second
 
 
@@ -38,7 +39,10 @@ async def test_fast_mode_uses_ten_second_steps(db):
     await funnel.add_step(172800, text="Через двое")
     await funnel.enqueue(1, fast=True, now=0)
     rows = await db.fetchall("SELECT due_at FROM user_steps ORDER BY due_at")
-    assert [r["due_at"] for r in rows] == [10, 20]
+    assert [r["due_at"] for r in rows] == [10, NOT_SCHEDULED]
+    first = (await funnel.due_steps(now=10))[0]["queue_id"]
+    await funnel.mark_sent(first, now=10)          # следующий — через 10 секунд после отправки
+    assert (await db.fetchone("SELECT due_at FROM user_steps WHERE status = 'pending'"))["due_at"] == 20
 
 
 async def test_due_selection_respects_time_and_status(db):
@@ -50,11 +54,12 @@ async def test_due_selection_respects_time_and_status(db):
 
     assert len(await funnel.due_steps(now=50)) == 0
     assert len(await funnel.due_steps(now=100)) == 1
-    assert len(await funnel.due_steps(now=5000)) == 2
+    assert len(await funnel.due_steps(now=5000)) == 1      # второй шаг ждёт первого
 
     queue_id = (await funnel.due_steps(now=5000))[0]["queue_id"]
-    await funnel.mark_sent(queue_id)
-    assert len(await funnel.due_steps(now=5000)) == 1
+    await funnel.mark_sent(queue_id, now=5000)
+    assert len(await funnel.due_steps(now=5000)) == 0
+    assert len(await funnel.due_steps(now=6000)) == 1      # 5000 + 1000 от фактической отправки
 
 
 async def test_due_selection_skips_blocked_users(db):
@@ -155,7 +160,7 @@ async def test_import_of_old_export_without_on_unsub_keeps_old_behaviour(db):
     assert (await funnel.list_steps())[0]["on_unsub"] == "remind"
 
 
-async def test_add_step_backfills_existing_users_from_their_own_material_time(db):
+async def test_add_step_backfills_existing_users_counting_from_now(db):
     users = UsersRepo(db)
     funnel = FunnelRepo(db)
     await users.upsert(1)
@@ -163,13 +168,14 @@ async def test_add_step_backfills_existing_users_from_their_own_material_time(db
     await users.upsert(2)
     await db.execute("UPDATE users SET material_sent_at = ? WHERE tg_id = 2", (1000 - 3600,))
 
-    step_id = await funnel.add_step(delay_seconds=7200, text="Новый шаг")
+    step_id = await funnel.add_step(delay_seconds=7200, text="Новый шаг", backfill=False)
+    await funnel.backfill_step(step_id, now=1000)
 
     rows = {r["user_id"]: r["due_at"] for r in await db.fetchall(
         "SELECT user_id, due_at FROM user_steps WHERE step_id = ?", (step_id,)
     )}
-    assert rows[1] == 1000 - 3 * 86400 + 7200   # у давнего due_at уже в прошлом
-    assert rows[2] == 1000 - 3600 + 7200         # у недавнего — своя дата + задержка
+    # и давний, и недавний считают задержку от момента добавления шага — задним числом ничего не уходит
+    assert rows == {1: 1000 + 7200, 2: 1000 + 7200}
 
 
 async def test_add_step_does_not_backfill_user_without_material(db):

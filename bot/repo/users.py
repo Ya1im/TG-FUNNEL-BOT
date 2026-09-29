@@ -97,17 +97,6 @@ class UsersRepo:
             (int(time.time()), tg_id),
         )
 
-    async def clear_click(self, tg_id: int) -> None:
-        await self.db.execute("UPDATE users SET lesson_clicked_at = NULL WHERE tg_id = ?", (tg_id,))
-
-    async def mark_lesson_clicked(self, tg_id: int, now: int) -> bool:
-        """Фиксирует ПЕРВЫЙ клик по уроку. True — этот вызов записал время (повтор — False)."""
-        cur = await self.db.conn.execute(
-            "UPDATE users SET lesson_clicked_at = ? WHERE tg_id = ? AND lesson_clicked_at IS NULL",
-            (int(now), tg_id),
-        )
-        await self.db.conn.commit()
-        return (cur.rowcount or 0) > 0
 
     async def claim_delivery(self, tg_id: int, now: int, ttl: int = 600) -> bool:
         """Атомарно «занять» выдачу урока: True — выдавать может только вызвавший.
