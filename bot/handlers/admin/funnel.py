@@ -11,6 +11,7 @@ from bot.repo.funnel import block_from_row, human_delay, parse_delay
 from bot.sender import send_block
 from bot.handlers.admin.common import (
     FunnelAdd,
+    FunnelEditClickDelay,
     FunnelEditContent,
     FunnelEditDelay,
     FunnelImport,
@@ -83,6 +84,12 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
             if step["requires_subscription"]
             else ""
         )
+        + (f"🛑 Отменяется после клика по уроку\n" if step["stop_on_click"] else "")
+        + (
+            f"🎯 После клика: через {human_delay(step['after_click_seconds'])}\n"
+            if step["after_click_seconds"] is not None
+            else ""
+        )
         + "\n"
         f"🎬 Медиа: {step['media_slug'] or 'нет'}\n"
         f"🔘 Кнопки: {buttons_hint(step['buttons_json'])}\n\n"
@@ -93,6 +100,8 @@ async def step_screen(target, deps, step_id: int, more: bool = False) -> None:
             [
                 [("🔒 Подписка вкл/выкл", f"a:fun:gate:{step_id}")],
                 [("🔔 Если не подписан: напомнить/пропустить", f"a:fun:unsub:{step_id}")],
+                [("🛑 Отменять после клика вкл/выкл", f"a:fun:stc:{step_id}")],
+                [("🎯 Задержка после клика", f"a:fun:ack:{step_id}")],
                 [("⏸ Вкл/выкл шаг", f"a:fun:tgl:{step_id}")],
                 [("⬆️ Выше", f"a:fun:up:{step_id}"), ("⬇️ Ниже", f"a:fun:dn:{step_id}")],
                 [("🗑 Удалить", f"a:fun:del:{step_id}")],
@@ -123,7 +132,7 @@ async def cb_step_preview(call: CallbackQuery, deps) -> None:
     steps = {s["id"]: s for s in await deps.funnel.list_steps()}
     step = steps.get(step_id)
     if step:
-        await send_block(block_from_row(step), call.bot, call.message.chat.id, user=call.from_user)
+        await send_block(block_from_row(step, track=True), call.bot, call.message.chat.id, user=call.from_user)
     await call.answer()
 
 
@@ -220,6 +229,8 @@ async def cb_step_edit_buttons(call: CallbackQuery, state: FSMContext) -> None:
         call,
         "🔘 <b>Кнопки шага</b>\n\n"
         "Пришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы бот засчитывал клик (для веток воронки), добавь третье поле:\n"
+        "<code>Смотреть урок | https://ссылка | клик</code>\n\n"
         "Чтобы убрать все кнопки — отправь <code>-</code>",
         kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
     )
@@ -237,6 +248,53 @@ async def on_step_edit_buttons(message: Message, state: FSMContext, deps) -> Non
     await deps.funnel.update_step(step_id, buttons_json=json.dumps(buttons, ensure_ascii=False))
     await state.clear()
     await step_screen(message, deps, step_id)
+
+
+# --- клик по уроку --------------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("a:fun:stc:"))
+async def cb_step_stop_on_click(call: CallbackQuery, deps) -> None:
+    step_id = int(call.data.split(":")[-1])
+    step = await deps.funnel.get_step(step_id)
+    if step is None:
+        await call.answer("Шаг не найден", show_alert=True)
+        return
+    await deps.funnel.update_step(step_id, stop_on_click=0 if step["stop_on_click"] else 1)
+    await call.answer("Готово")
+    await step_screen(call, deps, step_id, more=True)
+
+
+@router.callback_query(F.data.startswith("a:fun:ack:"))
+async def cb_step_click_delay(call: CallbackQuery, state: FSMContext) -> None:
+    step_id = int(call.data.split(":")[-1])
+    await state.set_state(FunnelEditClickDelay.waiting_value)
+    await state.update_data(step_id=step_id)
+    await show(
+        call,
+        "🎯 <b>Задержка после клика</b>\n\n"
+        "Через сколько после клика по кнопке урока слать этот шаг? "
+        "Остальные шаги после него сдвинутся вместе с ним.\n\n"
+        "Примеры: <code>1ч</code>, <code>30м</code>.\n"
+        "Чтобы убрать — отправь <code>-</code>.",
+        kb([[("⬅️ Отмена", f"a:fun:s:{step_id}")]]),
+    )
+    await call.answer()
+
+
+@router.message(FunnelEditClickDelay.waiting_value, F.text)
+async def on_step_click_delay(message: Message, state: FSMContext, deps) -> None:
+    data = await state.get_data()
+    if message.text.strip() == "-":
+        seconds = None
+    else:
+        seconds = parse_delay(message.text)
+        if seconds is None:
+            await message.answer("Не понял. Напиши как <code>1ч</code> или <code>30м</code>, либо <code>-</code>.")
+            return
+    await deps.funnel.update_step(data["step_id"], after_click_seconds=seconds)
+    await state.clear()
+    await step_screen(message, deps, data["step_id"])
 
 
 # --- изменение задержки ---------------------------------------------------

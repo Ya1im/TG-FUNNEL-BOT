@@ -123,7 +123,7 @@ class Scheduler:
                 return
 
         outcome = await send_block(
-            block_from_row(row),
+            block_from_row(row, track=True),
             self.bot,
             user_id,
             user=row,

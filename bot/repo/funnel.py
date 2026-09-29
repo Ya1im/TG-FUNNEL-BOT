@@ -26,6 +26,8 @@ class FunnelRepo:
         requires_subscription: bool = False,
         on_unsub: str = "skip",
         backfill: bool = True,
+        stop_on_click: bool = False,
+        after_click_seconds: int | None = None,
     ) -> int:
         """backfill=False — массовая загрузка всей цепочки разом (import_json, seed): здесь это не
         «добавили один новый шаг», а пересборка с нуля, задним числом никому ничего не шлём."""
@@ -34,7 +36,8 @@ class FunnelRepo:
         )
         step_id = await self.db.execute(
             "INSERT INTO funnel_steps(position, delay_seconds, requires_subscription, on_unsub, "
-            "text, media_id, buttons_json, enabled, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)",
+            "text, media_id, buttons_json, enabled, created_at, stop_on_click, after_click_seconds) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
             (
                 position,
                 int(delay_seconds),
@@ -44,6 +47,8 @@ class FunnelRepo:
                 media_id,
                 json.dumps(buttons or [], ensure_ascii=False),
                 int(time.time()),
+                1 if stop_on_click else 0,
+                int(after_click_seconds) if after_click_seconds is not None else None,
             ),
         )
         if backfill:
@@ -65,7 +70,8 @@ class FunnelRepo:
         return cur.rowcount or 0
 
     async def update_step(self, step_id: int, **fields) -> None:
-        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position"}
+        allowed = {"delay_seconds", "requires_subscription", "on_unsub", "text", "media_id", "buttons_json", "enabled", "position",
+               "stop_on_click", "after_click_seconds"}
         before = await self.get_step(step_id) if "enabled" in fields else None
         sets, params = [], []
         for key, value in fields.items():
@@ -123,8 +129,39 @@ class FunnelRepo:
                 (user_id, step["id"], now + delay),
             )
             created += cur.rowcount or 0
+        await self.db.conn.execute(
+            "UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id)
+        )
         await self.db.conn.commit()
         return created
+
+    async def apply_click(self, user_id: int, click_at: int, fast: bool = False) -> None:
+        """Первый клик по уроку: пуши «отменяются при клике» пропускаем, основную цепочку
+        переносим на «клик + N» с сохранением интервалов между постами."""
+        rows = await self.db.fetchall(
+            "SELECT us.id AS uid, us.due_at, fs.stop_on_click, fs.after_click_seconds "
+            "FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.user_id = ? AND us.status = 'pending' ORDER BY fs.position, fs.id",
+            (user_id,),
+        )
+        skip = [r["uid"] for r in rows if r["stop_on_click"]]
+        rest = [r for r in rows if not r["stop_on_click"]]
+        conn = self.db.conn
+        for uid in skip:
+            await conn.execute(
+                "UPDATE user_steps SET status = 'skipped', last_error = 'клик по уроку' WHERE id = ?",
+                (uid,),
+            )
+        anchor_idx = next((i for i, r in enumerate(rest) if r["after_click_seconds"] is not None), None)
+        if anchor_idx is not None:
+            anchor = rest[anchor_idx]
+            after = FAST_STEP_SECONDS if fast else int(anchor["after_click_seconds"])
+            delta = int(click_at) + after - int(anchor["due_at"])
+            for r in rest[anchor_idx:]:
+                await conn.execute(
+                    "UPDATE user_steps SET due_at = due_at + ? WHERE id = ?", (delta, r["uid"])
+                )
+        await conn.commit()
 
     async def due_steps(self, now: int | None = None, limit: int = 200):
         now = int(now if now is not None else time.time())
@@ -192,6 +229,8 @@ class FunnelRepo:
                 "media_slug": s["media_slug"],
                 "buttons": json.loads(s["buttons_json"] or "[]"),
                 "enabled": bool(s["enabled"]),
+                "stop_on_click": bool(s["stop_on_click"]),
+                "after_click_seconds": s["after_click_seconds"],
             }
             for s in steps
         ]
@@ -217,6 +256,8 @@ class FunnelRepo:
                 # старые выгрузки без поля напоминали автоматически — не меняем это молча
                 on_unsub=item.get("on_unsub") or ("remind" if item.get("requires_subscription") else "skip"),
                 backfill=False,  # массовая пересборка цепочки — не «добавили новый шаг»
+                stop_on_click=bool(item.get("stop_on_click")),
+                after_click_seconds=item.get("after_click_seconds"),
             )
             if not item.get("enabled", True):
                 await self.update_step(step_id, enabled=0)
@@ -224,8 +265,10 @@ class FunnelRepo:
         return count
 
 
-def block_from_row(row) -> ContentBlock:
-    """Собрать ContentBlock из строки очереди или списка шагов."""
+def block_from_row(row, track: bool = False) -> ContentBlock:
+    """Собрать ContentBlock из строки очереди или списка шагов.
+
+    track=True — кнопки с признаком «клик» станут callback-кнопками (только шаги прогрева и материал)."""
     buttons = []
     raw = row["buttons_json"]
     if raw:
@@ -238,6 +281,7 @@ def block_from_row(row) -> ContentBlock:
         media_kind=row["media_kind"],
         file_id=row["media_file_id"],
         buttons=buttons,
+        track=track,
     )
 
 

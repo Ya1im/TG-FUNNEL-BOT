@@ -1340,3 +1340,124 @@ async def test_guide_button_rejected_for_stats_role_client(stack):
     session.requests.clear()
     await feed(dp, bot, callback=make_callback("a:guide", user_id=VIEWER_ID))
     assert "SendDocument" not in session.names()
+
+
+# --- клик по кнопке урока и ветвление -------------------------------------
+
+LESSON_URL = "https://tkpdt.ru/lendingi150"
+
+
+async def _tracked_step(deps):
+    from bot.content import button_hash
+
+    step_id = await deps.funnel.add_step(
+        3600, text="Пуш", buttons=[{"text": "Смотреть урок", "url": LESSON_URL, "track": True}],
+        stop_on_click=True,
+    )
+    return step_id, "lc:" + button_hash(LESSON_URL)
+
+
+async def test_lc_callback_records_click_and_sends_link(stack):
+    dp, bot, session, deps = stack
+    await _tracked_step(deps)
+    await feed(dp, bot, message=make_message("/start"))
+    await deps.db.execute("UPDATE users SET material_sent_at = 100 WHERE tg_id = ?", (USER_ID,))
+    session.requests.clear()
+    from bot.content import button_hash
+
+    await feed(dp, bot, callback=make_callback("lc:" + button_hash(LESSON_URL)))
+
+    assert (await deps.users.get(USER_ID))["lesson_clicked_at"] is not None
+    sent = session.calls("SendMessage")[-1]
+    assert sent.text == "Вот урок 👇"
+    assert sent.reply_markup.inline_keyboard[0][0].url == LESSON_URL
+    assert sent.reply_markup.inline_keyboard[0][0].text == "Открыть урок"
+    assert "AnswerCallbackQuery" in session.names()
+
+
+async def test_lc_callback_repeat_sends_link_but_does_not_reshift(stack):
+    dp, bot, session, deps = stack
+    _, data = await _tracked_step(deps)
+    await feed(dp, bot, message=make_message("/start"))
+    first_click = 12345
+    await deps.db.execute("UPDATE users SET lesson_clicked_at = ? WHERE tg_id = ?", (first_click, USER_ID))
+    session.requests.clear()
+
+    await feed(dp, bot, callback=make_callback(data))
+
+    assert (await deps.users.get(USER_ID))["lesson_clicked_at"] == first_click
+    assert session.calls("SendMessage")[-1].reply_markup.inline_keyboard[0][0].url == LESSON_URL
+
+
+async def test_lc_callback_works_for_admin_too(stack):
+    dp, bot, session, deps = stack
+    _, data = await _tracked_step(deps)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(data, user_id=ADMIN_ID))
+    assert session.calls("SendMessage")[-1].reply_markup.inline_keyboard[0][0].url == LESSON_URL
+
+
+async def test_lc_callback_unknown_hash_alerts(stack):
+    dp, bot, session, deps = stack
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("lc:deadbeefdeadbeef"))
+    answers = session.calls("AnswerCallbackQuery")
+    assert answers and answers[-1].show_alert is True
+    assert "устарела" in answers[-1].text
+    assert not session.calls("SendMessage")
+
+
+async def test_material_delivers_tracked_button_as_callback(stack):
+    dp, bot, session, deps = stack
+    from bot.content import button_hash
+
+    await deps.material.add_block(
+        text="Урок", buttons=[{"text": "Смотреть урок", "url": LESSON_URL, "track": True}]
+    )
+    await deps.settings.set("channel_id", "-1001111111111")
+    await feed(dp, bot, message=make_message("/start"))
+    session.requests.clear()
+
+    await feed(dp, bot, callback=make_callback("check_sub"))
+
+    markup = next(m for m in session.calls("SendMessage") if m.text == "Урок").reply_markup
+    assert markup.inline_keyboard[0][0].callback_data == "lc:" + button_hash(LESSON_URL)
+    assert markup.inline_keyboard[0][0].url is None
+
+
+async def test_admin_step_card_click_settings(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(3600, text="Призыв")
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:stc:{step_id}", user_id=ADMIN_ID))
+    assert (await deps.funnel.get_step(step_id))["stop_on_click"] == 1
+    await feed(dp, bot, callback=make_callback(f"a:fun:stc:{step_id}", user_id=ADMIN_ID))
+    assert (await deps.funnel.get_step(step_id))["stop_on_click"] == 0
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:ack:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("1ч", user_id=ADMIN_ID, message_id=60))
+    assert (await deps.funnel.get_step(step_id))["after_click_seconds"] == 3600
+
+    await feed(dp, bot, callback=make_callback(f"a:fun:ack:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("-", user_id=ADMIN_ID, message_id=61))
+    assert (await deps.funnel.get_step(step_id))["after_click_seconds"] is None
+
+
+async def test_admin_step_card_shows_click_lines(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(
+        3600, text="Призыв", stop_on_click=True, after_click_seconds=3600
+    )
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:s:{step_id}", user_id=ADMIN_ID))
+    shown = " ".join(getattr(r, "text", "") or "" for r in session.requests)
+    assert "Отменяется после клика" in shown
+    assert "После клика: через 1 ч" in shown
+
+
+async def test_admin_step_delay_after_click_rejects_garbage(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(3600, text="Призыв")
+    await feed(dp, bot, callback=make_callback(f"a:fun:ack:{step_id}", user_id=ADMIN_ID))
+    await feed(dp, bot, message=make_message("абракадабра", user_id=ADMIN_ID, message_id=62))
+    assert (await deps.funnel.get_step(step_id))["after_click_seconds"] is None

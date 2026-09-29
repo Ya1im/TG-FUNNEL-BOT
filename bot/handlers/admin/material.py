@@ -138,7 +138,7 @@ async def cb_material_item_preview(call: CallbackQuery, deps) -> None:
         await call.answer("Блок не найден", show_alert=True)
         return
     outcome = await send_block(
-        block_from_row(block), call.bot, call.message.chat.id, user=call.from_user
+        block_from_row(block, track=True), call.bot, call.message.chat.id, user=call.from_user
     )
     if not outcome.ok:
         await call.answer(
@@ -189,6 +189,8 @@ async def cb_material_edit_buttons(call: CallbackQuery, state: FSMContext) -> No
         call,
         "🔘 <b>Кнопки блока</b>\n\n"
         "Пришли построчно:\n<code>Текст кнопки | https://ссылка</code>\n\n"
+        "Чтобы бот засчитывал клик (для веток воронки), добавь третье поле:\n"
+        "<code>Смотреть урок | https://ссылка | клик</code>\n\n"
         "Чтобы убрать все кнопки — отправь <code>-</code>",
         kb([[("⬅️ Отмена", f"a:mat:s:{block_id}")]]),
     )

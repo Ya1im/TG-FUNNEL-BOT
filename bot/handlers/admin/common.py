@@ -72,6 +72,12 @@ class FunnelEditDelay(StatesGroup):
     waiting_value = State()
 
 
+class FunnelEditClickDelay(StatesGroup):
+    """Задержка «после клика» у шага-призыва."""
+
+    waiting_value = State()
+
+
 class FunnelEditContent(StatesGroup):
     """Правка уже существующего шага прогрева — текст/медиа или кнопки отдельно."""
 

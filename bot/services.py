@@ -1,11 +1,13 @@
 """Сценарии пользователя: старт, проверка подписки, выдача материала."""
 from __future__ import annotations
 
+import json
 import logging
+import time
 
 from aiogram.exceptions import TelegramAPIError
 
-from bot.content import ContentBlock, apply_placeholders
+from bot.content import ContentBlock, apply_placeholders, button_hash
 from bot.keyboards import link_kb, subscribe_kb
 from bot.repo.funnel import block_from_row
 from bot.sender import safe_send, send_block
@@ -94,7 +96,7 @@ async def deliver_material(bot, deps, chat_id: int) -> None:
         )
 
     for row in await deps.material.list_blocks(only_enabled=True):
-        block = block_from_row(row)
+        block = block_from_row(row, track=True)
         if block.is_empty:
             continue
         await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
@@ -140,3 +142,34 @@ async def check_subscription_flow(bot, deps, user_id: int, chat_id: int) -> bool
             await deliver_material(bot, deps, chat_id)
         return True
     return False
+
+
+# --- клик по кнопке урока -------------------------------------------------
+
+
+async def find_tracked_url(deps, digest: str) -> str | None:
+    """URL кнопки «клик» по хешу из callback_data — среди шагов прогрева и блоков материала."""
+    rows = list(await deps.funnel.list_steps()) + list(await deps.material.list_blocks())
+    for row in rows:
+        try:
+            buttons = json.loads(row["buttons_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        for btn in buttons:
+            url = btn.get("url") or ""
+            if btn.get("track") and url and button_hash(url) == digest:
+                return url
+    return None
+
+
+async def record_click(deps, user_id: int, now: int | None = None) -> bool:
+    """Единая точка учёта клика: пишет первый клик и перестраивает воронку.
+
+    Возвращает True только для первого клика. Сюда же позже можно подвести
+    отслеживаемую ссылку через собственный домен — ветвление от этого не изменится."""
+    now = int(now if now is not None else time.time())
+    if not await deps.users.mark_lesson_clicked(user_id, now):
+        return False
+    user = await deps.users.get(user_id)
+    await deps.funnel.apply_click(user_id, now, fast=bool(user["funnel_fast"]))
+    return True
