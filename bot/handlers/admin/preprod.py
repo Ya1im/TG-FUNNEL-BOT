@@ -30,7 +30,7 @@ async def preprod_screen(target, deps) -> None:
         f"Тестовые аккаунты: {', '.join(f'<code>{i}</code>' for i in ids) if ids else 'не добавлены'}\n"
         f"Админы всегда получают публикации.\n\n"
         "Как проверить: добавьте второй аккаунт (его ID покажет команда /myid), откройте им бота, "
-        "нажмите /start и пройдите воронку. «Расписание» покажет, когда что придёт."
+        "откройте бота этим аккаунтом и командой /test запустите прогон. «Расписание» покажет, когда что придёт."
     )
     rows = [
         [("🟢 Выпустить в продакшен" if on else "🟡 Включить предпрод", "a:pre:tgl")],
@@ -49,9 +49,9 @@ async def cb_preprod(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data == "a:pre:tgl")
 async def cb_preprod_toggle(call: CallbackQuery, deps) -> None:
-    if not await require_owner(call, deps):
-        return
     if await is_enabled(deps.settings):
+        if not await require_owner(call, deps):
+            return  # выпуск в продакшен — только владелец
         await show(
             call,
             screen_text(
@@ -81,8 +81,6 @@ async def cb_preprod_off(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data == "a:pre:add")
 async def cb_preprod_add(call: CallbackQuery, deps, state: FSMContext) -> None:
-    if not await require_owner(call, deps):
-        return
     await state.set_state(PreprodAdd.waiting_value)
     await show(
         call,
@@ -113,8 +111,6 @@ async def on_preprod_add(message: Message, state: FSMContext, deps) -> None:
 
 @router.callback_query(F.data == "a:pre:clr")
 async def cb_preprod_clear(call: CallbackQuery, deps) -> None:
-    if not await require_owner(call, deps):
-        return
     await deps.settings.set("preprod_user_ids", "")
     await preprod_screen(call, deps)
     await call.answer("Список очищен")

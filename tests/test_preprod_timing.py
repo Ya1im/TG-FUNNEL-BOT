@@ -119,3 +119,15 @@ async def test_note_sent_once_even_after_postponed_attempt(db):
     await sched._process(row, stats, set(), preprod=True)
     assert [t for _, t, _ in bot.sent][0].startswith("🧪")
     assert await sched._note_already_sent(row) is True
+
+
+async def test_tester_ids_include_owners_role_admins_and_listed(db):
+    from bot.preprod import allowed_user_ids, tester_ids
+    await db.execute("INSERT INTO viewers(tg_id, name, added_at, role) VALUES(50, 'a', 0, 'admin')")
+    await db.execute("INSERT INTO viewers(tg_id, name, added_at, role) VALUES(51, 's', 0, 'stats')")
+    settings = SettingsRepo(db)
+    await settings.set("preprod_user_ids", "7, 8")
+    assert await tester_ids(settings, (99,), db) == {7, 8, 99, 50}
+    assert await allowed_user_ids(settings, (99,), db) is None                 # предпрод выключен
+    await settings.set("preprod_mode", "1")
+    assert await allowed_user_ids(settings, (99,), db) == {7, 8, 99, 50}

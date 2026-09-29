@@ -160,6 +160,59 @@ class FunnelRepo:
             await self.normalize_users(ids, now)
         return len(ids)
 
+    async def head_row(self, user_id: int):
+        """Головной шаг человека: первый ожидающий включённый по позиции."""
+        return await self.db.fetchone(
+            "SELECT us.id, us.due_at, fs.delay_seconds FROM user_steps us "
+            "JOIN funnel_steps fs ON fs.id = us.step_id "
+            "WHERE us.user_id = ? AND us.status = 'pending' AND fs.enabled = 1 "
+            "ORDER BY fs.position, fs.id LIMIT 1",
+            (user_id,),
+        )
+
+    async def set_fast(self, user_id: int, fast: bool, now: int | None = None) -> None:
+        """Тестовый режим: ускоренно (10 секунд между постами) или в реальное время.
+        Срок ближайшего поста пересчитывается сразу."""
+        now = int(now if now is not None else time.time())
+        await self.db.execute("UPDATE users SET funnel_fast = ? WHERE tg_id = ?", (1 if fast else 0, user_id))
+        head = await self.head_row(user_id)
+        if head is None:
+            return
+        if fast:
+            due = now + FAST_STEP_SECONDS
+        else:
+            base = await self.db.fetchval(
+                "SELECT COALESCE(MAX(us.sent_at), (SELECT material_sent_at FROM users WHERE tg_id = ?)) "
+                "FROM user_steps us WHERE us.user_id = ? AND us.status = 'sent'",
+                (user_id, user_id),
+            )
+            due = max(now, int(base) + int(head["delay_seconds"])) if base else now + int(head["delay_seconds"])
+        await self.db.execute("UPDATE user_steps SET due_at = ? WHERE id = ?", (due, head["id"]))
+
+    async def skip_wait(self, user_id: int, now: int | None = None) -> bool:
+        """«Следующий пост сейчас»: срок головного шага — прямо сейчас. False — ожидающих шагов нет."""
+        now = int(now if now is not None else time.time())
+        head = await self.head_row(user_id)
+        if head is None:
+            return False
+        await self.db.execute("UPDATE user_steps SET due_at = ? WHERE id = ?", (now, head["id"]))
+        return True
+
+    async def user_progress(self, user_id: int):
+        """Все включённые шаги и то, что с ними у человека (для панели тестового прогона)."""
+        return await self.db.fetchall(
+            "SELECT fs.id AS step_id, fs.position, fs.delay_seconds, us.status, us.due_at, us.sent_at, "
+            "us.last_error FROM funnel_steps fs "
+            "LEFT JOIN user_steps us ON us.step_id = fs.id AND us.user_id = ? "
+            "WHERE fs.enabled = 1 ORDER BY fs.position, fs.id",
+            (user_id,),
+        )
+
+    async def has_fast_pending(self) -> bool:
+        return bool(await self.db.fetchval(
+            "SELECT 1 FROM user_steps us JOIN users u ON u.tg_id = us.user_id "
+            "WHERE us.status = 'pending' AND u.funnel_fast = 1 LIMIT 1", default=0))
+
     async def rebase_overdue_heads(self, now: int | None = None) -> int:
         """Выпуск в продакшен/старт после простоя: просроченные головные шаги — на «сейчас + задержка»."""
         return await self.normalize_all(now, rebase_overdue=True)

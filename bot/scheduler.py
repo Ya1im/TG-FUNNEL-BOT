@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from bot.preprod import allowed_user_ids, timing_note
+from bot.preprod import allowed_user_ids, timing_note, tester_ids
 from bot.reminder import send_reminder
 from bot.repo.funnel import block_from_row
 from bot.sender import BLOCKED, safe_send, send_block
@@ -18,6 +18,7 @@ GATE_CACHE_SECONDS = 300         # свежий результат провер�
 GATE_MAX_ATTEMPTS = 3             # столько напоминаний, потом шаг пропускаем
 ERROR_RETRY_SECONDS = 30 * 60
 ERROR_MAX_ATTEMPTS = 3
+FAST_TICK_SECONDS = 10
 BATCH = 200
 
 
@@ -79,7 +80,26 @@ class Scheduler:
                 await self.tick()
             except Exception:  # noqa: BLE001 — тик не имеет права уронить бота
                 log.exception("Ошибка в тике планировщика")
-            await self.sleep(self.tick_seconds)
+            await self.sleep(await self._sleep_seconds())
+
+    async def _sleep_seconds(self) -> float:
+        """Пока у кого-то идёт ускоренный тест (10 с между постами), проверяем очередь чаще."""
+        try:
+            if await self.funnel.has_fast_pending():
+                return min(self.tick_seconds, FAST_TICK_SECONDS)
+        except Exception:  # noqa: BLE001
+            log.exception("Не смог проверить ускоренные тесты")
+        return self.tick_seconds
+
+    async def run_user(self, user_id: int) -> int:
+        """Отправить человеку его ближайший созревший пост прямо сейчас (кнопка «Следующий пост сейчас»)."""
+        rows = await self.funnel.due_steps(int(self.now()), limit=1, only_users={user_id})
+        if not rows:
+            return 0
+        preprod = (await self.settings.get("preprod_mode")).strip() == "1"
+        stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
+        await self._process(rows[0], stats, set(), preprod=preprod)
+        return stats["sent"]
 
     async def tick(self) -> dict[str, int]:
         stats = {"sent": 0, "held": 0, "skipped": 0, "failed": 0, "blocked": 0}
@@ -96,7 +116,7 @@ class Scheduler:
             except Exception:  # noqa: BLE001 — лечение не должно останавливать отправку
                 log.exception("Ошибка самолечения очереди")
         self._ticks += 1
-        allowed = await allowed_user_ids(self.settings, self.funnel.admin_ids)
+        allowed = await allowed_user_ids(self.settings, self.funnel.admin_ids, self.users.db)
         rows = await self.funnel.due_steps(int(self.now()), limit=BATCH, only_users=allowed)
         reminded: set[int] = set()
         for row in rows:

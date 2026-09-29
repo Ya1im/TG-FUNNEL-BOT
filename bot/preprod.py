@@ -10,13 +10,21 @@ import re
 from bot.repo.funnel import human_delay
 
 
-async def allowed_user_ids(settings, admin_ids=()) -> set[int] | None:
-    """None — предпрод выключен (получатели любые). Иначе — множество допустимых получателей:
-    тестовые аккаунты из настроек и админы (им нужно «прогнать на себе»)."""
+async def tester_ids(settings, admin_ids=(), db=None) -> set[int]:
+    """Тестировщики: владельцы, админы с полным доступом (роль admin) и аккаунты из списка предпрода."""
+    listed = {int(x) for x in re.findall(r"\d+", await settings.get("preprod_user_ids"))}
+    ids = listed | {int(a) for a in admin_ids}
+    if db is not None:
+        rows = await db.fetchall("SELECT tg_id FROM viewers WHERE role = 'admin'")
+        ids |= {int(r["tg_id"]) for r in rows}
+    return ids
+
+
+async def allowed_user_ids(settings, admin_ids=(), db=None) -> set[int] | None:
+    """None — предпрод выключен (получатели любые). Иначе — тестировщики (`tester_ids`)."""
     if (await settings.get("preprod_mode")).strip() != "1":
         return None
-    listed = {int(x) for x in re.findall(r"\d+", await settings.get("preprod_user_ids"))}
-    return listed | {int(a) for a in admin_ids}
+    return await tester_ids(settings, admin_ids, db)
 
 
 async def is_enabled(settings) -> bool:

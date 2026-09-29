@@ -6,7 +6,7 @@ import time
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from bot.handlers.admin.common import kb, require_owner, screen_text, show
+from bot.handlers.admin.common import kb, screen_text, show
 from bot.recall import build_plan, run_recall
 
 router = Router(name="admin-recall")
@@ -62,8 +62,6 @@ async def cb_recall_window(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data.startswith("a:rec:go:"))
 async def cb_recall_go(call: CallbackQuery, deps) -> None:
-    if not await require_owner(call, deps):
-        return
     seconds = int(call.data.split(":")[-1])
     await call.answer("Удаляю…")
     await show(call, "⏳ Удаляю публикации у людей, это может занять несколько минут…")

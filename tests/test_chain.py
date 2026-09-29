@@ -212,3 +212,69 @@ async def test_scheduler_heals_on_first_tick(db):
                       now=lambda: 1000)
     await sched.tick()
     assert (await dues(db))[1][0] == 1500
+
+
+async def test_set_fast_and_back_recalculates_head(db):
+    funnel = FunnelRepo(db)
+    await user(db, material_sent_at=1000)
+    await steps(funnel, 2 * H, 6 * H)
+    await funnel.enqueue(1, now=1000)
+    await funnel.set_fast(1, True, now=5000)
+    assert (await dues(db))[0][0] == 5000 + FAST_STEP_SECONDS
+    assert (await db.fetchone("SELECT funnel_fast FROM users"))["funnel_fast"] == 1
+    assert await funnel.has_fast_pending() is True
+    await funnel.set_fast(1, False, now=5000)
+    assert (await dues(db))[0][0] == 1000 + 2 * H           # реальное время — от выдачи урока
+    assert await funnel.has_fast_pending() is False
+    await funnel.set_fast(1, False, now=20_000)
+    assert (await dues(db))[0][0] == 20_000                 # 1000 + 2ч уже в прошлом → «сейчас»
+
+
+async def test_skip_wait_makes_head_due_now(db):
+    funnel = FunnelRepo(db)
+    await user(db)
+    await steps(funnel, 12 * H, 12 * H)
+    await funnel.enqueue(1, now=0)
+    assert await funnel.skip_wait(1, now=777) is True
+    assert (await dues(db))[0][0] == 777
+    assert len(await funnel.due_steps(now=777)) == 1
+    other = FunnelRepo(db)
+    assert await other.skip_wait(404) is False
+
+
+async def test_user_progress_lists_enabled_steps(db):
+    funnel = FunnelRepo(db)
+    await user(db)
+    a, b, c = await steps(funnel, 100, 200, 300)
+    await funnel.update_step(b, enabled=0)
+    rows = await funnel.user_progress(1)
+    assert [r["step_id"] for r in rows] == [a, c] and rows[0]["status"] is None
+    await funnel.enqueue(1, now=0)
+    assert [r["status"] for r in await funnel.user_progress(1)] == ["pending", "pending"]
+
+
+async def test_run_user_sends_only_that_users_due_step(db):
+    funnel = FunnelRepo(db)
+    for uid in (1, 2):
+        await user(db, uid)
+    await steps(funnel, 100, 100)
+    for uid in (1, 2):
+        await funnel.enqueue(uid, now=0)
+    bot = Bot()
+    sched = Scheduler(bot=bot, users=UsersRepo(db), funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      now=lambda: 500)
+    assert await sched.run_user(1) == 1
+    assert [c for c, _ in bot.sent] == [1]
+    assert await sched.run_user(1) == 0                      # второй пост ждёт свою задержку
+
+
+async def test_scheduler_polls_faster_while_fast_test_is_running(db):
+    funnel = FunnelRepo(db)
+    await user(db)
+    await steps(funnel, 3600)
+    sched = Scheduler(bot=Bot(), users=UsersRepo(db), funnel=funnel, settings=SettingsRepo(db), gate=Gate(),
+                      tick_seconds=60, now=lambda: 0)
+    await funnel.enqueue(1, now=0)
+    assert await sched._sleep_seconds() == 60
+    await funnel.set_fast(1, True, now=0)
+    assert await sched._sleep_seconds() == 10

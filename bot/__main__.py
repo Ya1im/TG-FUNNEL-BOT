@@ -52,6 +52,7 @@ async def set_commands(bot: Bot, config: Config) -> None:
     admin_commands = [
         BotCommand(command="start", description="Пройти сценарий как пользователь"),
         BotCommand(command="admin", description="Админка"),
+        BotCommand(command="test", description="Тестовый прогон воронки"),
         BotCommand(command="reset", description="Сбросить своё прохождение"),
     ]
     for admin_id in config.admin_ids:

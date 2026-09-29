@@ -34,7 +34,7 @@ class BroadcastEngine:
     async def _allowed(self):
         if self.settings is None:
             return None
-        return await allowed_user_ids(self.settings, self.users.admin_ids)
+        return await allowed_user_ids(self.settings, self.users.admin_ids, self.users.db)
 
     async def prepare(
         self,

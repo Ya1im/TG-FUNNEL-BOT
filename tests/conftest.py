@@ -27,6 +27,7 @@ ROUTER_MODULES = [
     "bot.handlers.admin.fallback",
     "bot.handlers.admin",
     "bot.handlers.viewer",
+    "bot.handlers.tester",
     "bot.handlers.user",
     "bot.handlers",
     "bot.__main__",

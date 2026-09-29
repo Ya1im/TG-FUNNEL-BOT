@@ -167,7 +167,9 @@ async def auto_deliver_due(bot, deps, now: int | None = None) -> int:
     now = int(now if now is not None else time.time())
     delivered = 0
     since = await deps.settings.get_int("auto_deliver_since") or 0
-    allowed = await allowed_user_ids(deps.settings, deps.config.admin_ids if getattr(deps, "config", None) else ())
+    allowed = await allowed_user_ids(
+        deps.settings, deps.config.admin_ids if getattr(deps, "config", None) else (), deps.db
+    )
     for user_id in await deps.users.due_for_auto_delivery(now, minutes, since=since, only_users=allowed):
         try:
             state = await deps.gate.status(user_id, cached_seconds=300)

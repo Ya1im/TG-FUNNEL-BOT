@@ -43,7 +43,7 @@ async def funnel_screen(target, deps) -> None:
         rows.append(
             [(f"{index}. ⏱ {human_delay(step['delay_seconds'])} {mark}{off}".strip(), f"a:fun:s:{step['id']}")]
         )
-    rows.append([("▶️ Прогнать на себе", "a:fun:test")])
+    rows.append([("🧪 Тестовый прогон", "t:open")])
     rows.append([("🧪 Предпрод", "a:pre"), ("🧯 Отозвать отправленное", "a:rec")])
     rows.append([("⬇️ Экспорт", "a:fun:exp"), ("⬆️ Импорт", "a:fun:imp")])
     rows.append([("⬅️ Назад", "a:flow")])
@@ -330,20 +330,7 @@ async def on_add_buttons(message: Message, state: FSMContext, deps) -> None:
     await funnel_screen(message, deps)
 
 
-# --- тестовый прогон, экспорт, импорт -------------------------------------
-
-
-@router.callback_query(F.data == "a:fun:test")
-async def cb_funnel_test(call: CallbackQuery, deps) -> None:
-    user_id = call.from_user.id
-    await deps.users.upsert(user_id, call.from_user.username, call.from_user.first_name)
-    await deps.funnel.clear_user(user_id)
-    count = await deps.funnel.enqueue(user_id, fast=True)
-    await call.answer()
-    await call.message.answer(
-        f"Запустил прогон на тебе: {count} шагов с задержкой по 10 секунд.\n"
-        "Шаги с 🔒 всё так же проверят подписку."
-    )
+# --- экспорт, импорт -------------------------------------
 
 
 @router.callback_query(F.data == "a:fun:exp")

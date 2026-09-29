@@ -12,6 +12,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Messag
 
 from bot.deps import Deps
 from bot.keyboards import CHECK_CALLBACK, link_kb
+from bot.tester import is_tester
 from bot.services import (
     check_subscription_flow,
     send_welcome,
@@ -85,18 +86,20 @@ async def cb_legacy_lesson_button(call: CallbackQuery, deps: Deps) -> None:
 
 
 async def _sync_admin_commands(message: Message, deps: Deps) -> None:
-    """Меню команд для админа выставляем при первом заходе — до /start чат не существует."""
-    if not deps.config.is_admin(message.from_user.id):
+    """Меню команд для админа и тестировщика выставляем при первом заходе — до /start чат не существует."""
+    user_id = message.from_user.id
+    is_owner = deps.config.is_admin(user_id)
+    is_role_admin = not is_owner and await deps.access.role(user_id) == "admin"
+    if not is_owner and not is_role_admin and not await is_tester(deps, user_id):
         return
+    commands = [BotCommand(command="start", description="Пройти сценарий как пользователь")]
+    if is_owner or is_role_admin:
+        commands.append(BotCommand(command="admin", description="Админка"))
+    commands.append(BotCommand(command="test", description="Тестовый прогон воронки"))
+    if is_owner:
+        commands.append(BotCommand(command="reset", description="Сбросить своё прохождение"))
     try:
-        await message.bot.set_my_commands(
-            [
-                BotCommand(command="start", description="Пройти сценарий как пользователь"),
-                BotCommand(command="admin", description="Админка"),
-                BotCommand(command="reset", description="Сбросить своё прохождение"),
-            ],
-            scope=BotCommandScopeChat(chat_id=message.chat.id),
-        )
+        await message.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=message.chat.id))
     except Exception:  # noqa: BLE001 — не критично
         log.debug("Не смог выставить команды админу %s", message.from_user.id)
 
@@ -124,10 +127,18 @@ async def cmd_help(message: Message, deps: Deps) -> None:
             "Команды:\n"
             "/start — сценарий как у пользователя\n"
             "/admin — админка (медиатека, прогрев, рассылки, настройки)\n"
-            "/reset — сбросить своё прохождение и пройти воронку заново"
+            "/reset — сбросить своё прохождение и пройти воронку заново\n"
+            "/test — панель тестового прогона воронки"
+        )
+    elif await deps.access.role(message.from_user.id) == "admin":
+        await message.answer(
+            "Команды:\n/start — сценарий как у пользователя\n/admin — админка\n"
+            "/test — панель тестового прогона воронки\n/stats — статистика бота"
         )
     elif await deps.access.role(message.from_user.id) is not None:
         await message.answer("Команда: /stats — статистика бота.")
+    elif await is_tester(deps, message.from_user.id):
+        await message.answer("Команды:\n/start — сценарий как у пользователя\n/test — панель тестового прогона воронки")
     else:
         await message.answer("Жми /start 🙂")
 

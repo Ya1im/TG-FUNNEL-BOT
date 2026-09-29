@@ -905,11 +905,11 @@ async def _open(dp, bot, session, data, user_id: int = ADMIN_ID):
     return _screen(session)
 
 
-async def test_admin_main_menu_has_five_sections(stack):
+async def test_admin_main_menu_sections(stack):
     dp, bot, session, deps = stack
     await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
     _, markup = _screen(session)
-    assert _callbacks(markup) == ["a:flow", "a:bc", "a:stat", "a:set", "a:guide"]
+    assert _callbacks(markup) == ["a:flow", "a:bc", "t:open", "a:stat", "a:set", "a:guide"]
 
 
 async def test_main_menu_shows_what_is_left_to_configure(stack):
@@ -1377,12 +1377,6 @@ async def test_admin_edits_auto_deliver_minutes(stack):
     assert await deps.settings.get_int("auto_deliver_minutes") == 30
 
 
-async def test_funnel_test_run_enables_fast_mode(stack):
-    dp, bot, session, deps = stack
-    await deps.funnel.add_step(3600, text="Пуш")
-    await deps.users.upsert(ADMIN_ID, "adm", "Адм")
-    await feed(dp, bot, callback=make_callback("a:fun:test", user_id=ADMIN_ID))
-    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 1
 
 
 
@@ -1496,3 +1490,112 @@ async def test_recall_window_without_sends_says_nothing_to_recall(stack):
     session.requests.clear()
     await feed(dp, bot, callback=make_callback("a:rec:w:900", user_id=ADMIN_ID))
     assert "ничего не отправлялось" in _shown(session)
+
+
+# --- панель тестового прогона /test ---------------------------------------
+
+TESTER_ID = 555
+
+
+def _texts(session):
+    return " ".join(str(getattr(r, "text", "") or "") for r in session.requests)
+
+
+def _all_callbacks(session):
+    out = []
+    for r in session.requests:
+        markup = getattr(r, "reply_markup", None)
+        if markup is not None and hasattr(markup, "inline_keyboard"):
+            out += [b.callback_data for row in markup.inline_keyboard for b in row]
+    return out
+
+
+async def test_test_panel_hidden_from_strangers(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/test", user_id=USER_ID))
+    assert "Тестовый прогон" not in _texts(session)
+    await feed(dp, bot, callback=make_callback("t:new", user_id=USER_ID))
+    assert (await deps.users.get(USER_ID)) is None or (await deps.users.get(USER_ID))["material_sent_at"] is None
+    assert "SendMessage" not in session.names()
+
+
+async def test_test_panel_opens_for_owner_role_admin_and_listed_tester(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш")
+    await deps.access.add(600, "Клиент", None, role="admin")
+    await deps.settings.set("preprod_user_ids", str(TESTER_ID))
+    for uid in (ADMIN_ID, 600, TESTER_ID):
+        session.requests.clear()
+        await feed(dp, bot, message=make_message("/test", user_id=uid))
+        assert "Тестовый прогон" in _texts(session), uid
+        assert {"t:new", "t:lesson", "t:next", "t:fast", "t:real", "t:ref"} <= set(_all_callbacks(session))
+
+
+async def test_test_panel_button_in_admin_menu_opens_panel(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш")
+    await feed(dp, bot, callback=make_callback("t:open", user_id=ADMIN_ID))
+    assert "Прогресс: 0 из 1" in _texts(session)
+
+
+async def test_test_panel_restart_resets_and_sends_welcome(stack):
+    dp, bot, session, deps = stack
+    await deps.users.upsert(TESTER_ID, "t", "Тест")
+    await deps.settings.set("preprod_user_ids", str(TESTER_ID))
+    await deps.db.execute("UPDATE users SET material_sent_at = 5, funnel_fast = 1 WHERE tg_id = ?", (TESTER_ID,))
+    await feed(dp, bot, callback=make_callback("t:new", user_id=TESTER_ID))
+    user = await deps.users.get(TESTER_ID)
+    assert user["material_sent_at"] is None and user["funnel_fast"] == 0
+    assert "SendMessage" in session.names()
+
+
+async def test_test_panel_lesson_button_starts_funnel_without_subscription(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш")
+    await feed(dp, bot, callback=make_callback("t:lesson", user_id=ADMIN_ID))
+    user = await deps.users.get(ADMIN_ID)
+    assert user["material_sent_at"] is not None
+    assert await deps.funnel.pending_count(ADMIN_ID) == 1
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("t:lesson", user_id=ADMIN_ID))     # повтор — не выдаёт второй раз
+    assert await deps.funnel.pending_count(ADMIN_ID) == 1
+
+
+async def test_test_panel_fast_and_real_buttons(stack):
+    dp, bot, session, deps = stack
+    await deps.funnel.add_step(3600, text="Пуш")
+    await feed(dp, bot, callback=make_callback("t:lesson", user_id=ADMIN_ID))
+    await feed(dp, bot, callback=make_callback("t:fast", user_id=ADMIN_ID))
+    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 1
+    assert "ускоренно" in _texts(session)
+    await feed(dp, bot, callback=make_callback("t:real", user_id=ADMIN_ID))
+    assert (await deps.users.get(ADMIN_ID))["funnel_fast"] == 0
+
+
+async def test_test_panel_next_post_now_sends_it(stack):
+    from bot.scheduler import Scheduler
+
+    dp, bot, session, deps = stack
+    deps.scheduler = Scheduler(bot=bot, users=deps.users, funnel=deps.funnel, settings=deps.settings,
+                               gate=deps.gate, limiter=deps.limiter, sent_log=deps.sent_log)
+    await deps.funnel.add_step(12 * 3600, text="Пост через 12 часов")
+    await feed(dp, bot, callback=make_callback("t:lesson", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("t:next", user_id=ADMIN_ID))
+    assert "Пост через 12 часов" in _texts(session)
+    assert "✅ 1" in _texts(session)                         # панель показывает отправленный пост
+
+
+async def test_admin_role_can_manage_testers_but_not_release(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(600, "Клиент", None, role="admin")
+    await deps.settings.set("preprod_mode", "1")
+    await feed(dp, bot, callback=make_callback("a:pre:add", user_id=600))
+    assert "Тестовый аккаунт" in _texts(session)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:pre:tgl", user_id=600))              # выпуск: только владелец
+    assert (await deps.settings.get("preprod_mode")) == "1"
+    await feed(dp, bot, callback=make_callback("a:pre:off", user_id=600))
+    assert (await deps.settings.get("preprod_mode")) == "1"
+    await feed(dp, bot, callback=make_callback("a:pre:off", user_id=ADMIN_ID))
+    assert (await deps.settings.get("preprod_mode")) == "0"
