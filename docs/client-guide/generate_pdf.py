@@ -33,8 +33,11 @@ _EMOJI_RE = re.compile(
 )
 
 
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+
+
 def _strip_emoji(text: str) -> str:
-    return _EMOJI_RE.sub("", text).strip()
+    return _INLINE_CODE_RE.sub(r'<font name="DejaVuSans-Bold">\1</font>', _EMOJI_RE.sub("", text).strip())
 
 
 def _register_fonts() -> None:
@@ -48,6 +51,7 @@ def _styles() -> dict[str, ParagraphStyle]:
         "meta": ParagraphStyle("meta", fontName="DejaVuSans", fontSize=10, textColor="#666666", spaceAfter=16),
         "h1": ParagraphStyle("h1", fontName="DejaVuSans-Bold", fontSize=15, leading=19, spaceBefore=14, spaceAfter=8),
         "h2": ParagraphStyle("h2", fontName="DejaVuSans-Bold", fontSize=12.5, leading=16, spaceBefore=10, spaceAfter=6),
+        "h3": ParagraphStyle("h3", fontName="DejaVuSans-Bold", fontSize=11, leading=14, spaceBefore=8, spaceAfter=4),
         "body": ParagraphStyle("body", fontName="DejaVuSans", fontSize=10.5, leading=15, spaceAfter=6),
         "bullet": ParagraphStyle("bullet", fontName="DejaVuSans", fontSize=10.5, leading=15),
     }
@@ -75,7 +79,10 @@ def build_story(markdown_text: str, styles: dict[str, ParagraphStyle]) -> list:
         if not line:
             flush_bullets()
             continue
-        if line.startswith("### "):
+        if line.startswith("#### "):
+            flush_bullets()
+            story.append(Paragraph(_strip_emoji(line[5:]), styles["h3"]))
+        elif line.startswith("### "):
             flush_bullets()
             story.append(Paragraph(_strip_emoji(line[4:]), styles["h2"]))
         elif line.startswith("## "):

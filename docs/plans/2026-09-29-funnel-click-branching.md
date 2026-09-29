@@ -42,7 +42,7 @@
 - Test: `tests/test_db.py`, `tests/test_repo.py`, `tests/test_funnel.py` (кнопки — там же, где тесты `ContentBlock`; если их нет — новый `tests/test_tracked_buttons.py`)
 
 **Interfaces:**
-- Produces: колонки `users.lesson_clicked_at INTEGER`, `users.deliver_claim_at INTEGER`, `users.funnel_fast INTEGER NOT NULL DEFAULT 0`, `funnel_steps.stop_on_click INTEGER NOT NULL DEFAULT 0`, `funnel_steps.after_click_seconds INTEGER`; настройки из Global Constraints; `bot/content.py::button_hash(url: str) -> str` (sha1 hex, 16 символов); `ContentBlock.keyboard(*, track: bool = False)` — при `track=True` кнопка с `btn.get("track")` строится как `InlineKeyboardButton(text, callback_data=f"lc:{button_hash(url)}")`, иначе URL-кнопка; `parse_buttons` возвращает `{"text","url"}` или `{"text","url","track":True}`.
+- Produces: колонки `users.lesson_clicked_at INTEGER`, `users.deliver_claim_at INTEGER`, `users.funnel_fast INTEGER NOT NULL DEFAULT 0`, `funnel_steps.stop_on_click INTEGER NOT NULL DEFAULT 0`, `funnel_steps.after_click_seconds INTEGER`; настройки из Global Constraints; `bot/content.py::button_hash(url: str) -> str` (sha1 hex, 16 символов); `ContentBlock.track: bool = False` (поле датакласса; `keyboard()` без параметров) — при `track=True` кнопка с `btn.get("track")` строится как `InlineKeyboardButton(text, callback_data=f"lc:{button_hash(url)}")`, иначе URL-кнопка; `parse_buttons` возвращает `{"text","url"}` или `{"text","url","track":True}`.
 
 - [ ] **Step 1: Failing tests**
   - `test_db.py::test_migrate_adds_click_columns` — база, созданная старой схемой (без новых колонок), после `connect()` содержит все 5 колонок (`_has_column`), повторный `connect()` не падает.
