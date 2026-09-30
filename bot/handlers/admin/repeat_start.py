@@ -6,11 +6,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.repo.funnel import block_from_row
-from bot.sender import send_block
 from bot.handlers.admin.common import (
     RepeatStartAdd,
     buttons_hint,
     capture_content,
+    send_preview,
     item_label,
     kb,
     parse_buttons,
@@ -139,9 +139,7 @@ async def cb_repeat_start_item_preview(call: CallbackQuery, deps) -> None:
     if not block:
         await call.answer("Блок не найден", show_alert=True)
         return
-    outcome = await send_block(
-        block_from_row(block), call.bot, call.message.chat.id, user=call.from_user
-    )
+    [outcome] = await send_preview(call, [block_from_row(block)])
     if not outcome.ok:
         await call.answer(
             "Не смог отправить файл — похоже, он от другого бота (сменился токен). "
@@ -192,7 +190,5 @@ async def cb_repeat_start_delete(call: CallbackQuery, deps) -> None:
 @router.callback_query(F.data == "a:rst:prev")
 async def cb_repeat_start_preview(call: CallbackQuery, deps) -> None:
     await call.answer("Отправляю тебе, как это увидит пользователь")
-    for row in await deps.repeat_start.list_blocks(only_enabled=True):
-        block = block_from_row(row)
-        if not block.is_empty:
-            await send_block(block, call.bot, call.message.chat.id, user=call.from_user)
+    blocks = [block_from_row(row) for row in await deps.repeat_start.list_blocks(only_enabled=True)]
+    await send_preview(call, [block for block in blocks if not block.is_empty])

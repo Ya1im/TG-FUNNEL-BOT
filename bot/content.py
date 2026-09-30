@@ -1,7 +1,9 @@
 """Единица контента: текст + медиа + кнопки. Умеет превращаться в вызовы Telegram."""
 from __future__ import annotations
 
+import html
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -11,6 +13,26 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 # Типы, у которых нет подписи — текст придётся слать отдельным сообщением
 CAPTIONLESS = {"video_note", "sticker"}
 CAPTION_LIMIT = 1024
+PREMIUM_CAPTION_LIMIT = 2048   # у Premium-аккаунта заказчика подпись может быть до 2048
+_caption_limit = PREMIUM_CAPTION_LIMIT   # оптимистично; если Telegram откажет — понижаем до 1024
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def get_caption_limit() -> int:
+    return _caption_limit
+
+
+def set_caption_limit(value: int) -> None:
+    global _caption_limit
+    _caption_limit = int(value)
+
+
+def visible_len(text: str | None) -> int:
+    """Длина видимого текста: без HTML-тегов и с раскрытыми сущностями. Именно её считает Telegram
+    для лимита подписи; сама HTML-строка длиннее (каждое кастомное эмодзи — ещё ~50 служебных символов)."""
+    if not text:
+        return 0
+    return len(html.unescape(_TAG_RE.sub("", text)))
 
 Factory = Callable[[], Awaitable[Any]]
 
@@ -80,6 +102,22 @@ class ContentBlock:
         kb = None if self.render(user) else self.keyboard()
         return _bind(send, bot, chat_id, self.file_id, None, kb)
 
+    def caption_overflow(self, user: Any = None) -> bool:
+        """Текст с медиа не помещается в подпись (по известному сейчас лимиту) и уйдёт вторым сообщением."""
+        text = self.render(user)
+        return bool(
+            self.file_id and self.media_kind and self.media_kind not in CAPTIONLESS
+            and text and visible_len(text) > get_caption_limit()
+        )
+
+    def long_caption(self, user: Any = None) -> bool:
+        """Подпись длиннее обычного лимита 1024, но уходит одним сообщением (расчёт на Premium-лимит)."""
+        text = self.render(user)
+        return bool(
+            self.file_id and self.media_kind and self.media_kind not in CAPTIONLESS
+            and text and CAPTION_LIMIT < visible_len(text) <= get_caption_limit()
+        )
+
     def factories(self, bot: Bot, chat_id: int, user: Any = None) -> list[Factory]:
         """Список отправок: обычно одна, для кружка с текстом — две."""
         text = self.render(user)
@@ -91,7 +129,7 @@ class ContentBlock:
             send = _SENDERS.get(kind)
             if send is None:
                 raise ValueError(f"Неизвестный тип медиа: {kind}")
-            caption_ok = kind not in CAPTIONLESS and text and len(text) <= CAPTION_LIMIT
+            caption_ok = kind not in CAPTIONLESS and text and visible_len(text) <= get_caption_limit()
             caption = text if caption_ok else None
             split = bool(text) and not caption_ok  # текст уходит отдельным сообщением
             # кнопка всегда одна: если есть отдельный текст — она под ним, а не под медиа

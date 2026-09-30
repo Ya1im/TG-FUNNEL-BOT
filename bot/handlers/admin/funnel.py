@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.repo.funnel import block_from_item, blocks_from_row, human_delay, parse_delay, step_messages
-from bot.sender import send_block
 from bot.handlers.admin.common import (
     FunnelAdd,
     FunnelEditContent,
@@ -26,6 +25,7 @@ from bot.handlers.admin.common import (
     parse_buttons,
     preview,
     safe_excerpt,
+    send_preview,
     screen_text,
     show,
 )
@@ -140,8 +140,7 @@ async def cb_step_preview(call: CallbackQuery, deps) -> None:
     step_id = int(call.data.split(":")[-1])
     step = await deps.funnel.get_step_row(step_id)
     if step:
-        for block in blocks_from_row(step):
-            await send_block(block, call.bot, call.message.chat.id, user=call.from_user)
+        await send_preview(call, blocks_from_row(step))
     await call.answer()
 
 
@@ -492,7 +491,7 @@ async def cb_message_preview(call: CallbackQuery, deps) -> None:
     if not messages or not (0 <= idx < len(messages)):
         await call.answer("Сообщение не найдено", show_alert=True)
         return
-    await send_block(block_from_item(messages[idx]), call.bot, call.message.chat.id, user=call.from_user)
+    await send_preview(call, [block_from_item(messages[idx])])
     await call.answer("Это увидят люди")
 
 

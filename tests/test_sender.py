@@ -135,7 +135,7 @@ async def test_photo_uses_caption():
 
 async def test_long_caption_goes_as_separate_message():
     bot = FakeBot()
-    block = ContentBlock(text="я" * 1500, media_kind="photo", file_id="F")
+    block = ContentBlock(text="я" * 2100, media_kind="photo", file_id="F")
     await send_block(block, bot, 1)
     assert [c[0] for c in bot.calls] == ["photo", "text"]
     assert bot.calls[0][3] is None

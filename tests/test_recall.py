@@ -172,7 +172,7 @@ def test_messages_per_step():
     assert messages_per_step("текст", None, None) == 1
     assert messages_per_step("текст", "photo", "F") == 1
     assert messages_per_step("текст", "video_note", "F") == 2
-    assert messages_per_step("я" * 2000, "photo", "F") == 2
+    assert messages_per_step("я" * 2100, "photo", "F") == 2
 
 
 def test_probe_text_is_not_blank_for_telegram():

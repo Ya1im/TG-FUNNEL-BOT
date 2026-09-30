@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -15,6 +16,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 
+from bot import content
 from bot.content import is_voice_forbidden
 
 log = logging.getLogger(__name__)
@@ -30,6 +32,8 @@ class SendOutcome:
     error: str | None = None
     result: Any = None
     message_ids: list[int] = field(default_factory=list)  # номера отправленных сообщений (для отзыва)
+    caption_split: bool = False       # подпись не влезла в лимит Telegram — текст ушёл вторым сообщением
+    custom_emoji_lost: bool = False   # кастомные эмодзи в тексте, но Telegram отдал сообщение без них
 
     @property
     def ok(self) -> bool:
@@ -116,6 +120,33 @@ async def send_block(
     Кружок, отклонённый Telegram из-за приватности получателя
     (VOICE_MESSAGES_FORBIDDEN — общая настройка на голосовые и видеосообщения),
     пробуем донести запасным способом — обычным видео (см. ContentBlock.fallback_factory)."""
+    outcome = await _send_block_once(block, bot, chat_id, user=user, users=users, limiter=limiter)
+    if not outcome.ok and not outcome.message_ids and block.long_caption(user) and _TOO_LONG_RE.search(outcome.error or ""):
+        # Telegram не принял подпись сверх 1024 — запоминаем и шлём привычным способом (медиа + текст)
+        log.info("Подпись длиннее 1024 не принята — дальше делю длинные подписи на два сообщения")
+        content.set_caption_limit(content.CAPTION_LIMIT)
+        outcome = await _send_block_once(block, bot, chat_id, user=user, users=users, limiter=limiter)
+    outcome.caption_split = block.caption_overflow(user)
+    if outcome.ok:
+        outcome.custom_emoji_lost = _custom_emoji_lost(block, user, outcome.result)
+    return outcome
+
+
+_TOO_LONG_RE = re.compile(r"too[ _]long", re.IGNORECASE)
+
+
+def _custom_emoji_lost(block, user, result) -> bool:
+    """В тексте были кастомные эмодзи, а отправленное сообщение вернулось без custom_emoji-сущностей —
+    значит Telegram их не принял (нужен Premium у владельца бота). Если форму ответа не понять — не считаем потерей."""
+    if "<tg-emoji" not in (block.text or ""):
+        return False
+    if not (hasattr(result, "entities") or hasattr(result, "caption_entities")):
+        return False
+    entities = list(getattr(result, "entities", None) or []) + list(getattr(result, "caption_entities", None) or [])
+    return not any(getattr(entity, "type", None) == "custom_emoji" for entity in entities)
+
+
+async def _send_block_once(block, bot, chat_id, *, user=None, users=None, limiter=None) -> SendOutcome:
     outcome = SendOutcome(SENT)
     ids: list[int] = []
     for index, factory in enumerate(block.factories(bot, chat_id, user)):

@@ -1804,3 +1804,37 @@ async def test_subscription_screen_has_auto_delivery_button(stack):
     assert "Автовыдача урока: выкл" in " ".join(
         b.text for r in session.requests if getattr(r, "reply_markup", None) for row in r.reply_markup.inline_keyboard for b in row
     )
+
+
+CUSTOM_EMOJI_HTML = 'Привет <tg-emoji emoji-id="5368324170671202286">😀</tg-emoji>'
+
+
+async def test_preview_warns_when_telegram_drops_custom_emoji(stack):
+    """MockSession возвращает сообщение без custom_emoji-сущностей — как Telegram для бота без Premium у владельца."""
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(3600, text=CUSTOM_EMOJI_HTML, backfill=False)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:prev:{step_id}", user_id=ADMIN_ID))
+    texts = [m.text for m in session.calls("SendMessage")]
+    assert texts[0] == CUSTOM_EMOJI_HTML
+    assert any("Premium" in (t or "") for t in texts[1:])
+
+
+async def test_preview_of_plain_step_has_no_warning(stack):
+    dp, bot, session, deps = stack
+    step_id = await deps.funnel.add_step(3600, text="Обычный текст", backfill=False)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:fun:prev:{step_id}", user_id=ADMIN_ID))
+    assert [m.text for m in session.calls("SendMessage")] == ["Обычный текст"]
+
+
+async def test_material_and_repeat_start_previews_warn_about_custom_emoji(stack):
+    dp, bot, session, deps = stack
+    block_id = await deps.material.add_block(text=CUSTOM_EMOJI_HTML)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:mat:prev:{block_id}", user_id=ADMIN_ID))
+    assert any("Premium" in (m.text or "") for m in session.calls("SendMessage"))
+    rst_id = await deps.repeat_start.add_block(text=CUSTOM_EMOJI_HTML)
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback(f"a:rst:prev:{rst_id}", user_id=ADMIN_ID))
+    assert any("Premium" in (m.text or "") for m in session.calls("SendMessage"))

@@ -13,7 +13,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.content import ContentBlock
-from bot.sender import send_block
 from bot.handlers.admin.common import (
     BroadcastItemEdit,
     BroadcastNew,
@@ -26,6 +25,7 @@ from bot.handlers.admin.common import (
     require_owner,
     safe_excerpt,
     screen_text,
+    send_preview,
     show,
 )
 
@@ -315,7 +315,7 @@ async def cb_draft_preview(call: CallbackQuery, state: FSMContext) -> None:
     if not (0 <= idx < len(messages)):
         await call.answer("Сообщение не найдено", show_alert=True)
         return
-    await send_block(_block_from_item(messages[idx]), call.bot, call.message.chat.id, user=call.from_user)
+    await send_preview(call, [_block_from_item(messages[idx])])
     await call.answer("Это увидят люди")
 
 
@@ -481,7 +481,7 @@ async def cb_preview(call: CallbackQuery, deps) -> None:
                 message_id=msg["message_id"],
             )
         else:
-            await send_block(_block_from_item(msg), call.bot, call.message.chat.id, user=call.from_user)
+            await send_preview(call, [_block_from_item(msg)])
     await call.answer("Это увидят люди")
 
 

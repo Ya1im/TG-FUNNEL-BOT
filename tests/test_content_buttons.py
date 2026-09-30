@@ -33,7 +33,7 @@ async def test_photo_with_short_caption_has_one_button_under_photo():
 
 
 async def test_photo_with_long_text_has_button_only_under_text():
-    sent = await run(ContentBlock("я" * 1500, "photo", "P", BTN))
+    sent = await run(ContentBlock("я" * 2100, "photo", "P", BTN))
     assert sent == [("photo", False), ("text", True)]
 
 

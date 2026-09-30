@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 
 from bot.content import extract_media
+from bot.sender import send_block
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +231,37 @@ async def show(target: "Message | CallbackQuery | MenuRef", text: str, markup=No
         except Exception:  # noqa: BLE001
             log.exception("show(): не смог отправить даже запасное сообщение")
             return None
+
+
+EMOJI_LOST_NOTE = (
+    "⚠️ Кастомные эмодзи не показались. Telegram разрешает их в сообщениях бота, только если у владельца бота "
+    "(аккаунта, который создал бота в @BotFather) есть Telegram Premium. Пока его нет, люди увидят обычные эмодзи."
+)
+CAPTION_SPLIT_NOTE = (
+    "ℹ️ Подпись к медиа длиннее лимита Telegram, поэтому текст ушёл вторым сообщением. "
+    "Чтобы был один пост, сократите текст до 1024 символов."
+)
+
+
+def preview_notes(outcomes) -> str | None:
+    """Пояснения админу после «👁 Показать»: что могло выглядеть у людей иначе, чем в исходном посте."""
+    notes = []
+    if any(getattr(o, "custom_emoji_lost", False) for o in outcomes):
+        notes.append(EMOJI_LOST_NOTE)
+    if any(getattr(o, "caption_split", False) for o in outcomes):
+        notes.append(CAPTION_SPLIT_NOTE)
+    return "\n\n".join(notes) or None
+
+
+async def send_preview(call: CallbackQuery, blocks) -> list:
+    """Показать админу блоки так, как их увидят люди, и объяснить расхождения (эмодзи, разбиение подписи)."""
+    outcomes = []
+    for block in blocks:
+        outcomes.append(await send_block(block, call.bot, call.message.chat.id, user=call.from_user))
+    note = preview_notes(outcomes)
+    if note:
+        await call.message.answer(note)
+    return outcomes
 
 
 def message_text(message: Message) -> str | None:

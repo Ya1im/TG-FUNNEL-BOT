@@ -342,6 +342,20 @@ docs/client-guide/generate_pdf.py`) → закоммитить оба файла
   Y — сумма задержек включённых шагов. Номера пометок пишутся в журнал (отзываются вместе с постом).
 - Колонки добавляются через `Database._migrate` и лежат в `schema.sql` (старые базы дополняются сами).
 
+## Кастомные эмодзи и единое сообщение «фото + подпись» (30.09.2026)
+
+Спека: `docs/superpowers/specs/2026-09-30-emoji-and-caption-design.md`. Текст захватывается как HTML (`common.message_text` →
+`Message.html_text`, кастомные эмодзи = `<tg-emoji emoji-id>`), уходит в HTML-режиме. **Ограничение Telegram (Bot API 9.0):** бот
+показывает custom emoji в личных сообщениях, только если у ВЛАДЕЛЬЦА бота (создавшего его в @BotFather) есть Premium (либо
+купленные на Fragment юзернеймы); иначе сущность молча игнорируется. Кодом не обойти — `SendOutcome.custom_emoji_lost`
+(ответ Telegram без custom_emoji-сущностей) + `common.send_preview`/`preview_notes` предупреждают админа в «👁 Показать»
+(шаг, сообщение шага, материал, повторный /start, рассылка).
+Раньше лимит подписи 1024 сравнивался с длиной HTML-строки, и посты с эмодзи/ссылками резались на два сообщения.
+Теперь `content.visible_len` (без тегов, сущности раскрыты). Лимит подписи оптимистичный — `PREMIUM_CAPTION_LIMIT` 2048
+(`content.get/set_caption_limit`, состояние процесса); если Telegram отвечает «caption is too long», `sender.send_block`
+повторяет отправку разбитой (медиа + текст) и понижает лимит до 1024 до перезапуска; `SendOutcome.caption_split` сообщает об
+этом превью. Для модуля `messages_per_step` (recall) счёт остаётся приближённым.
+
 ## Несколько сообщений в шаге прогрева (30.09.2026)
 
 Спека: `docs/superpowers/specs/2026-09-30-multi-message-steps-design.md`, план `docs/plans/2026-09-30-multi-message-steps.md`.
