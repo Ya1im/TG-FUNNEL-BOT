@@ -133,3 +133,48 @@ async def test_leftover_delivery_claim_does_not_block_delivery_after_restart(db,
     bot.calls.clear()
     assert await check_subscription_flow(bot, deps, 1, 1) is True
     assert "Урок" in texts(bot)
+
+
+class StatusGate:
+    """Человек не подписался: для автовыдачи это «нет»."""
+
+    async def check(self, user_id):
+        return False
+
+    async def status(self, user_id, cached_seconds=0):
+        return "no"
+
+
+PROGRESS_COLUMNS = (
+    "material_sent_at", "funnel_started_at", "is_subscribed", "sub_checked_at",
+    "invite_sent_at", "deliver_claim_at", "lesson_clicked_at", "status",
+)
+
+
+async def test_restarted_person_is_indistinguishable_from_a_brand_new_one(db, config):
+    """Точка истины «перезапуск = обычная воронка»: состояние после перезапуска совпадает с состоянием нового человека."""
+    deps = await prepared(db, config)
+    await start_flow(FakeBot(), deps, FakeUser(), chat_id=1)                      # перезапуск
+    await start_flow(FakeBot(), deps, FakeUser(uid=2, username="new"), chat_id=2)  # новый человек
+    restarted, fresh = await deps.users.get(1), await deps.users.get(2)
+    assert {c: restarted[c] for c in PROGRESS_COLUMNS} == {c: fresh[c] for c in PROGRESS_COLUMNS}
+    assert await deps.funnel.pending_count(1) == await deps.funnel.pending_count(2) == 0
+
+
+async def test_auto_delivery_works_after_restart_even_without_subscription(db, config):
+    """Перезапущенный, не подписавшийся человек получает урок через час — как в обычной воронке — и прогрев идёт с начала."""
+    from bot.services import auto_deliver_due
+
+    deps = await prepared(db, config)
+    deps.gate = StatusGate()
+    await start_flow(FakeBot(), deps, FakeUser(), chat_id=1)
+    started = (await deps.users.get(1))["started_at"]
+    bot = FakeBot()
+    assert await auto_deliver_due(bot, deps, now=started + 59 * 60) == 0          # рано
+    assert bot.calls == []
+    assert await auto_deliver_due(bot, deps, now=started + 61 * 60) == 1          # через час — урок
+    assert "Урок" in texts(bot) and not any(c[0] == "invite" for c in bot.calls)  # без ссылки: не подписан
+    rows = await db.fetchall(
+        "SELECT us.status FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+        "WHERE us.user_id = 1 ORDER BY fs.position")
+    assert [r["status"] for r in rows] == ["pending", "pending"]                  # все посты заново, с первого
