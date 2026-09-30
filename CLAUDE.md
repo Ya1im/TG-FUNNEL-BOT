@@ -346,12 +346,13 @@ docs/client-guide/generate_pdf.py`) → закоммитить оба файла
 
 Настройка `repeat_start_mode` (`message` — по умолчанию, блоки «Повторный /start»; `restart`), переключатель `a:rst:mode` на экране
 «Повторный /start». `services.start_flow`: у человека с `material_sent_at` в режиме `restart` вызывается `services.restart_funnel`:
-под глобальным `_restart_lock`, не раньше `RESTART_COOLDOWN_SECONDS` (60 с) после прошлой выдачи → `users.restart` (обнуляет
-`material_sent_at/funnel_started_at/lesson_clicked_at/deliver_claim_at`, чистит `user_steps`; `source`, `started_at`,
-`is_subscribed`, `invite_sent_at`, `funnel_fast` остаются) → `deliver_material_once(send_invite=False)`: подводка + блоки материала +
-`funnel.enqueue` (цепочка с самого первого шага, тайминги прежние). Кружок/подписка пропускаются, личная ссылка не шлётся повторно.
-Если выдача упала, человек остаётся «без урока» и его подхватит автовыдача. Блоки «Повторный /start» в режиме restart не
-отправляются. Статистика по шагам у перезапущенных считается заново (`user_steps` очищаются). Тесты: `tests/test_restart_funnel.py`.
+под глобальным `_restart_lock`, не раньше `RESTART_COOLDOWN_SECONDS` (60 с) после прошлой выдачи → `users.restart` (полный сброс
+как у нового: `material_sent_at/funnel_started_at/lesson_clicked_at/deliver_claim_at/is_subscribed/sub_checked_at/invite_sent_at`
+= NULL/0, `started_at` = сейчас (таймер автовыдачи), чистит `user_steps`; `source` и `funnel_fast` остаются) → `send_welcome`
+(кружок + меню подписки). Дальше обычный путь: проверка подписки → `deliver_material_once` (урок, личная ссылка, `funnel.enqueue`) →
+цепочка с первого шага, тайминги от новой выдачи. Человек без урока (`material_sent_at` пуст) — прежняя ветка (только меню).
+Блоки «Повторный /start» в режиме restart не отправляются. Статистика по шагам у перезапущенных считается заново, `started_at`
+обновляется (попадает в «приток» снова). Тесты: `tests/test_restart_funnel.py`.
 
 ## Кастомные эмодзи и единое сообщение «фото + подпись» (30.09.2026)
 

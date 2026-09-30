@@ -161,12 +161,14 @@ class UsersRepo:
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
 
     async def restart(self, tg_id: int) -> None:
-        """Перезапуск воронки по повторному /start: как reset(), но человек остаётся «тем же»:
-        источник, время первого захода, подписка, личная ссылка и тестовый режим сохраняются."""
+        """Перезапуск воронки по повторному /start: предыдущее прохождение сбрасывается целиком, как у нового
+        человека (подписка проверяется заново, личная ссылка выдастся снова, таймер автовыдачи идёт от этого
+        момента). Остаются только источник и тестовый режим ускоренного прогона."""
         await self.db.execute(
             "UPDATE users SET material_sent_at = NULL, funnel_started_at = NULL, lesson_clicked_at = NULL, "
-            "deliver_claim_at = NULL, status = 'active' WHERE tg_id = ?",
-            (tg_id,),
+            "deliver_claim_at = NULL, is_subscribed = 0, sub_checked_at = NULL, invite_sent_at = NULL, "
+            "status = 'active', started_at = ? WHERE tg_id = ?",
+            (int(time.time()), tg_id),
         )
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
 

@@ -58,19 +58,20 @@ _restart_lock = asyncio.Lock()  # два /start подряд не должны �
 
 
 async def restart_funnel(bot, deps, chat_id: int, now: int | None = None) -> bool:
-    """Режим «перезапуск воронки» на повторный /start: урок выдаётся заново и прогрев идёт с самого начала
-    по тем же шагам, файлам, кнопкам и задержкам (всё берётся из настроенной воронки, ничего не копируется).
-    Кружок и проверка подписки пропускаются; личную ссылку в закрытый канал повторно не шлём.
-    False — перезапуска не было (урока ещё не было, слишком рано после предыдущей выдачи, заблокировал бота)."""
+    """Режим «перезапуск воронки» на повторный /start: предыдущее прохождение сбрасывается, и человек идёт по
+    воронке как новый: кружок и меню подписки → проверка подписки → урок → весь прогрев с первого шага по тем же
+    шагам, файлам, кнопкам и задержкам (всё берётся из настроенной воронки, ничего не копируется).
+    False — перезапуска не было (урока ещё не было или слишком рано после предыдущей выдачи)."""
     now = int(now if now is not None else time.time())
     async with _restart_lock:
         user = await deps.users.get(chat_id)
         if not user or not user["material_sent_at"]:
             return False
         if now - int(user["material_sent_at"]) < RESTART_COOLDOWN_SECONDS:
-            return False
+            return False  # только что получил урок — случайный двойной /start не сбрасывает воронку
         await deps.users.restart(chat_id)
-        return await deliver_material_once(bot, deps, chat_id, send_invite=False, now=now)
+    await send_welcome(bot, deps, chat_id)
+    return True
 
 
 async def migrate_repeat_start_blocks(deps) -> None:
