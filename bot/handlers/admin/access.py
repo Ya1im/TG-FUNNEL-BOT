@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from bot.menu import sync_menu
 from bot.handlers.admin.common import ViewerAdd, kb, require_owner, screen_text, show
 
 router = Router(name="admin-access")
@@ -167,6 +168,9 @@ async def cb_delete_ask(call: CallbackQuery, deps) -> None:
 async def cb_delete_do(call: CallbackQuery, deps) -> None:
     if not await require_owner(call, deps):
         return
-    await deps.access.remove(int(call.data.split(":")[-1]))
+    tg_id = int(call.data.split(":")[-1])
+    await deps.access.remove(tg_id)
+    # Личное меню клиента (например, из одной /stats) убираем — дальше у него общее меню с /start
+    await sync_menu(call.bot, deps, tg_id, tg_id, clear_if_none=True)
     await call.answer("Убрал")
     await access_screen(call, deps)

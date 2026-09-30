@@ -18,6 +18,7 @@ from bot.db import Database
 from bot.deps import Deps
 from bot.handlers import build_router
 from bot.scheduler import Scheduler
+from bot.menu import sync_all_menus
 from bot.preprod import init_chain, init_preprod
 from bot.services import auto_deliver_due, init_auto_delivery, migrate_repeat_start_blocks
 from bot.stats_export import stats_export_hook
@@ -110,6 +111,7 @@ async def main() -> None:
 
     dp = build_dispatcher(deps)
     await set_commands(bot, config)
+    menu_task = asyncio.create_task(sync_all_menus(bot, deps))  # чиним личные меню клиентов и админов
 
     me = await bot.me()
     log.info("Запускаю @%s, админы: %s", me.username, config.admin_ids)
@@ -119,6 +121,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        menu_task.cancel()
         await scheduler.stop()
         await db.close()
         await bot.session.close()

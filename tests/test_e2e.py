@@ -1932,3 +1932,21 @@ async def test_repeat_start_screen_toggles_restart_mode(stack):
     assert "заново" in edit.text and "не отправляются" in edit.text
     await feed(dp, bot, callback=make_callback("a:rst:mode", user_id=ADMIN_ID))
     assert await deps.settings.get("repeat_start_mode") == "message"
+
+
+async def test_stats_client_menu_keeps_start(stack):
+    """Клиент по ссылке доступа получает меню из /start и /stats, а не из одной /stats."""
+    dp, bot, session, deps = stack
+    token = await deps.access.create_invite(ADMIN_ID)
+    await feed(dp, bot, message=make_message(f"/start v_{token}", user_id=555))
+    sets = session.calls("SetMyCommands")
+    assert sets, "меню команд должно выставиться"
+    assert [c.command for c in sets[-1].commands] == ["start", "stats"]
+
+
+async def test_removing_client_clears_personal_menu(stack):
+    dp, bot, session, deps = stack
+    await deps.access.add(555, "Борис", None, role="stats")
+    await feed(dp, bot, callback=make_callback("a:acc:delok:555", user_id=ADMIN_ID))
+    assert session.calls("DeleteMyCommands")
+    assert await deps.access.role(555) is None

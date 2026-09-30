@@ -8,10 +8,11 @@ import logging
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message
 
 from bot.deps import Deps
 from bot.keyboards import CHECK_CALLBACK, link_kb
+from bot.menu import sync_menu
 from bot.tester import is_tester
 from bot.services import (
     check_subscription_flow,
@@ -32,7 +33,7 @@ async def cmd_start(message: Message, command: CommandObject, deps: Deps) -> Non
     # Приветствие — в первую очередь: меню команд не влияет на то, что видит человек,
     # и не должно задерживать welcome лишним походом в Telegram API (см. CLAUDE.md, грабли).
     await start_flow(message.bot, deps, message.from_user, message.chat.id, payload)
-    await _sync_admin_commands(message, deps)
+    await sync_menu(message.bot, deps, message.from_user.id, message.chat.id)
 
 
 async def _redeem_viewer_invite(message: Message, deps: Deps, token: str) -> None:
@@ -41,13 +42,7 @@ async def _redeem_viewer_invite(message: Message, deps: Deps, token: str) -> Non
     if not await deps.access.redeem(token, user.id, user.full_name, user.username):
         await message.answer("Ссылка недействительна или уже использована. Попросите новую.")
         return
-    try:
-        await message.bot.set_my_commands(
-            [BotCommand(command="stats", description="Статистика бота")],
-            scope=BotCommandScopeChat(chat_id=message.chat.id),
-        )
-    except Exception:  # noqa: BLE001 — меню команд не критично
-        log.debug("Не смог выставить команды клиенту %s", user.id)
+    await sync_menu(message.bot, deps, user.id, message.chat.id)
     await message.answer("Готово ✅ Доступ открыт. Отправьте /stats — пришлю статистику бота.")
 
 
@@ -83,27 +78,6 @@ async def cb_legacy_lesson_button(call: CallbackQuery, deps: Deps) -> None:
                 )
                 return
     await call.answer("Ссылка устарела. Напишите /start", show_alert=True)
-
-
-async def _sync_admin_commands(message: Message, deps: Deps) -> None:
-    """Меню команд для админа и тестировщика выставляем при первом заходе — до /start чат не существует."""
-    user_id = message.from_user.id
-    is_owner = deps.config.is_admin(user_id)
-    is_role_admin = not is_owner and await deps.access.role(user_id) == "admin"
-    if not is_owner and not is_role_admin and not await is_tester(deps, user_id):
-        return
-    commands = [BotCommand(command="start", description="Пройти сценарий как пользователь")]
-    if is_owner or is_role_admin:
-        commands.append(BotCommand(command="admin", description="Админка"))
-    commands.append(BotCommand(command="test", description="Тестовый прогон воронки"))
-    if is_role_admin:
-        commands.append(BotCommand(command="stats", description="Статистика бота"))
-    if is_owner:
-        commands.append(BotCommand(command="reset", description="Сбросить своё прохождение"))
-    try:
-        await message.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=message.chat.id))
-    except Exception:  # noqa: BLE001 — не критично
-        log.debug("Не смог выставить команды админу %s", message.from_user.id)
 
 
 @router.message(Command("reset"))
