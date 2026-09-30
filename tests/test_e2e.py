@@ -1878,3 +1878,41 @@ async def test_settings_screen_has_emoji_check_button(stack):
     await feed(dp, bot, callback=make_callback("a:set", user_id=ADMIN_ID))
     labels = [b.text for row in session.calls("EditMessageText")[-1].reply_markup.inline_keyboard for b in row]
     assert "✨ Проверка кастомных эмодзи" in labels
+
+
+def make_entity_message(text, entities, message_id=90, user_id=ADMIN_ID):
+    return Message(
+        message_id=message_id, date=datetime.now(timezone.utc), chat=Chat(id=user_id, type="private"),
+        from_user=User(id=user_id, is_bot=False, first_name="Босс", is_premium=True), text=text, entities=entities,
+    )
+
+
+async def test_emoji_diagnostics_reads_entities_and_sends_both_variants(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:set:emojidiag", user_id=ADMIN_ID))
+    session.requests.clear()
+    entities = [MessageEntity(type="custom_emoji", offset=7, length=2, custom_emoji_id="5368324170671202286")]
+    await feed(dp, bot, message=make_entity_message("Привет 😀 мир", entities))
+    sent = [m.text for m in session.calls("SendMessage")]
+    assert any("кастомных эмодзи: 1" in (t or "") for t in sent)                 # прочитал сущность
+    assert any("<tg-emoji" in (t or "") for t in sent)                           # способ 1: как текст бота
+    assert len(session.calls("CopyMessage")) == 1                                # способ 2: копия исходного
+    assert await dp.fsm.get_context(bot, chat_id=ADMIN_ID, user_id=ADMIN_ID).get_state() is None
+
+
+async def test_emoji_diagnostics_explains_when_message_has_no_custom_emoji(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:set:emojidiag", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, message=make_entity_message("Обычный текст 😀", None))
+    sent = " ".join(m.text or "" for m in session.calls("SendMessage"))
+    assert "нет кастомных эмодзи" in sent
+    assert session.calls("CopyMessage") == []
+
+
+async def test_emoji_check_report_shows_what_telegram_returned(stack):
+    dp, bot, session, deps = stack
+    session.keep_custom_emoji = False
+    await feed(dp, bot, callback=make_callback("a:set:emoji", user_id=ADMIN_ID))
+    report = " ".join(m.text for m in session.calls("EditMessageText"))
+    assert "Что вернул Telegram" in report

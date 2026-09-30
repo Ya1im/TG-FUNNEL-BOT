@@ -92,6 +92,12 @@ class FunnelEditContent(StatesGroup):
     waiting_buttons = State()
 
 
+class EmojiDiag(StatesGroup):
+    """Диагностика кастомных эмодзи: ждём от админа сообщение, в котором они есть."""
+
+    waiting = State()
+
+
 class FunnelImport(StatesGroup):
     waiting_file = State()
 

@@ -181,3 +181,39 @@ async def test_probe_custom_emoji_returns_true_false_or_none():
             raise TelegramBadRequest(method=SendPhoto(chat_id=1, photo="x"), message="Bad Request: chat not found")
 
     assert await probe_custom_emoji(Broken(), 1) is None                # проверить не удалось — не гадаем
+
+
+class StickerBot(Bot):
+    def __init__(self, stickers, **kwargs):
+        super().__init__(**kwargs)
+        self._stickers = stickers
+
+    async def get_forum_topic_icon_stickers(self):
+        if isinstance(self._stickers, Exception):
+            raise self._stickers
+        return self._stickers
+
+
+def sticker(custom_id, emoji="🔥"):
+    return SimpleNamespace(custom_emoji_id=custom_id, emoji=emoji)
+
+
+async def test_probe_takes_a_live_custom_emoji_id_from_telegram():
+    """Захардкоженный id мог устареть и дать ложное «не работают»: берём живой из forum topic icons."""
+    from bot.emoji_check import probe
+
+    bot = StickerBot([sticker(None), sticker("777", "🔥")], keep_custom_emoji=True)
+    result = await probe(bot, 1)
+    assert result.ok is True and result.emoji_id == "777" and result.source == "telegram"
+    assert 'emoji-id="777"' in bot.sent[0][1] and "🔥" in bot.sent[0][1]
+    assert result.entity_types == ["custom_emoji"]
+
+
+async def test_probe_falls_back_to_documented_id_when_stickers_unavailable():
+    from bot.emoji_check import DOC_EMOJI_ID, probe
+
+    for stickers in (RuntimeError("нет сети"), True, []):
+        bot = StickerBot(stickers, keep_custom_emoji=False)
+        result = await probe(bot, 1)
+        assert result.ok is False and result.emoji_id == DOC_EMOJI_ID and result.source == "docs"
+        assert result.entity_types == []

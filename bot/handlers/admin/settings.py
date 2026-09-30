@@ -6,10 +6,13 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from bot.content import ContentBlock, extract_media
 from bot.repo.media import KIND_TITLES
+from bot.sender import send_block
 from bot.handlers.admin.flow import hello_screen, subscription_screen
 from bot.handlers.admin.common import (
     ChannelSet,
+    EmojiDiag,
     SettingEdit,
     kb,
     message_text,
@@ -92,7 +95,16 @@ async def settings_screen(target, deps, is_owner: bool) -> None:
     )
 
 
-def emoji_report(ok: bool | None, account_premium: bool | None) -> str:
+def emoji_report(ok: bool | None, account_premium: bool | None, result=None) -> str:
+    details = ""
+    if result is not None:
+        returned = ", ".join(result.entity_types) or "ничего, эмодзи отброшено" if ok is not None else "ответа нет"
+        origin = "живой эмодзи из Telegram" if result.source == "telegram" else "эмодзи из документации Telegram"
+        details = f"\n\nЧто вернул Telegram: {returned}. Проба: {origin}."
+    return _emoji_verdict(ok, account_premium) + details
+
+
+def _emoji_verdict(ok: bool | None, account_premium: bool | None) -> str:
     if ok is True:
         return (
             "✅ <b>Кастомные эмодзи работают.</b>\n\nTelegram принял их в сообщении бота: у владельца бота "
@@ -115,15 +127,79 @@ def emoji_report(ok: bool | None, account_premium: bool | None) -> str:
 
 @router.callback_query(F.data == "a:set:emoji")
 async def cb_emoji_check(call: CallbackQuery) -> None:
-    from bot.emoji_check import probe_custom_emoji
+    from bot.emoji_check import probe
 
-    ok = await probe_custom_emoji(call.bot, call.message.chat.id)
+    result = await probe(call.bot, call.message.chat.id)
     await show(
         call,
-        screen_text("✨ Кастомные эмодзи", "Бот отправил вам пробное сообщение — так выглядит проверка.", emoji_report(ok, call.from_user.is_premium)),
-        kb([[("🔄 Проверить ещё раз", "a:set:emoji")], [("⬅️ Назад", "a:set")]]),
+        screen_text(
+            "✨ Кастомные эмодзи",
+            "Бот отправил вам пробное сообщение — так выглядит проверка.",
+            emoji_report(result.ok, call.from_user.is_premium, result),
+        ),
+        kb([
+            [("🔄 Проверить ещё раз", "a:set:emoji")],
+            [("🔬 Диагностика по моему сообщению", "a:set:emojidiag")],
+            [("⬅️ Назад", "a:set")],
+        ]),
     )
     await call.answer()
+
+
+@router.callback_query(F.data == "a:set:emojidiag")
+async def cb_emoji_diag(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(EmojiDiag.waiting)
+    await show(
+        call,
+        screen_text(
+            "🔬 Диагностика эмодзи",
+            "Пришлите (или перешлите) сообщение, где есть ваши кастомные эмодзи. Бот покажет, что он в нём прочитал, "
+            "и вернёт его двумя способами, чтобы вы увидели, какой из них сохраняет эмодзи.",
+        ),
+        kb([[("✖️ Отмена", "a:set:emoji")]]),
+    )
+    await call.answer()
+
+
+@router.message(EmojiDiag.waiting, ~F.text.startswith("/"))
+async def on_emoji_diag(message: Message, state: FSMContext) -> None:
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    custom = [e for e in entities if e.type == "custom_emoji"]
+    if not custom:
+        await message.answer(
+            "В этом сообщении нет кастомных эмодзи. Отправьте сообщение с Premium-аккаунта или перешлите готовый пост "
+            "и попробуйте ещё раз."
+        )
+        return
+    ids = ", ".join(sorted({e.custom_emoji_id for e in custom if e.custom_emoji_id}))
+    await message.answer(f"Нашёл кастомных эмодзи: {len(custom)}. Их id: {ids}. Читать их бот умеет.")
+    found = extract_media(message)
+    block = ContentBlock(
+        text=message_text(message),
+        media_kind=found[0] if found else None,
+        file_id=found[1] if found else None,
+    )
+    await message.answer("Способ 1: бот отправляет это как свой текст (так уходят посты людям):")
+    outcome = await send_block(block, message.bot, message.chat.id)
+    await message.answer("Способ 2: бот копирует ваше исходное сообщение как есть:")
+    copied = True
+    try:
+        await message.bot.copy_message(chat_id=message.chat.id, from_chat_id=message.chat.id, message_id=message.message_id)
+    except Exception:  # noqa: BLE001 — копия не обязательна для диагностики
+        copied = False
+    verdict = (
+        "Способ 1: Telegram принял эмодзи (в ответе есть custom_emoji)."
+        if outcome.ok and not outcome.custom_emoji_lost
+        else "Способ 1: Telegram отбросил кастомные эмодзи — люди увидят обычные."
+        if outcome.ok
+        else "Способ 1: отправить не удалось."
+    )
+    await message.answer(
+        f"{verdict}\n"
+        + ("Способ 2 автоматически проверить нельзя: посмотрите глазами, в каком из двух сообщений видны ваши эмодзи."
+           if copied else "Способ 2: копию сделать не удалось.")
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data == "a:set")
