@@ -22,12 +22,14 @@ from bot.handlers.admin.common import (
 
 router = Router(name="admin-repeat-start")
 
-HINT = "Уходит тем, кто уже получил материал и снова жмёт /start. Пусто — бот молчит."
+HINT = "Что бот делает, когда тот, кто уже получил материал, снова жмёт /start."
 
 
 async def repeat_start_screen(target, deps) -> None:
     blocks = await deps.repeat_start.list_blocks()
-    rows = [[("➕ Добавить блок", "a:rst:add")]]
+    restart = (await deps.settings.get("repeat_start_mode")).strip() == "restart"
+    rows = [[("🔄 Режим: перезапуск воронки" if restart else "🔄 Режим: сообщения", "a:rst:mode")]]
+    rows.append([("➕ Добавить блок", "a:rst:add")])
     lines = []
     for index, block in enumerate(blocks, start=1):
         mark = "" if block["enabled"] else " ⏸"
@@ -42,8 +44,26 @@ async def repeat_start_screen(target, deps) -> None:
     if blocks:
         rows.append([("👁 Показать целиком", "a:rst:prev")])
     rows.append([("⬅️ Назад", "a:flow")])
-    body = "\n".join(lines) if lines else "Блоков пока нет — на повторный /start бот молчит."
-    await show(target, screen_text("🔁 Повторный /start", HINT, body), kb(rows))
+    blocks_text = "\n".join(lines) if lines else "Блоков пока нет — на повторный /start бот молчит."
+    if restart:
+        mode_text = (
+            "🔄 <b>Режим: перезапуск воронки.</b> Повторный /start выдаёт урок заново, и весь прогрев идёт с начала: "
+            "те же шаги, файлы, кнопки и задержки. Блоки ниже в этом режиме не отправляются."
+        )
+    else:
+        mode_text = (
+            "💬 <b>Режим: сообщения.</b> На повторный /start бот присылает блоки ниже. "
+            "Чтобы запускать воронку заново, переключите режим."
+        )
+    await show(target, screen_text("🔁 Повторный /start", HINT, f"{mode_text}\n\n{blocks_text}"), kb(rows))
+
+
+@router.callback_query(F.data == "a:rst:mode")
+async def cb_repeat_start_mode(call: CallbackQuery, deps) -> None:
+    current = (await deps.settings.get("repeat_start_mode")).strip()
+    await deps.settings.set("repeat_start_mode", "message" if current == "restart" else "restart")
+    await repeat_start_screen(call, deps)
+    await call.answer("Режим изменён")
 
 
 @router.callback_query(F.data == "a:rst")

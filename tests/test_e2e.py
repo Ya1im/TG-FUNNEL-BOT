@@ -1916,3 +1916,19 @@ async def test_emoji_check_report_shows_what_telegram_returned(stack):
     await feed(dp, bot, callback=make_callback("a:set:emoji", user_id=ADMIN_ID))
     report = " ".join(m.text for m in session.calls("EditMessageText"))
     assert "Что вернул Telegram" in report
+
+
+async def test_repeat_start_screen_toggles_restart_mode(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:rst", user_id=ADMIN_ID))
+    edit = session.calls("EditMessageText")[-1]
+    labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
+    assert "🔄 Режим: сообщения" in labels and "Режим: сообщения" in edit.text
+    await feed(dp, bot, callback=make_callback("a:rst:mode", user_id=ADMIN_ID))
+    assert await deps.settings.get("repeat_start_mode") == "restart"
+    edit = session.calls("EditMessageText")[-1]
+    labels = [b.text for row in edit.reply_markup.inline_keyboard for b in row]
+    assert "🔄 Режим: перезапуск воронки" in labels
+    assert "заново" in edit.text and "не отправляются" in edit.text
+    await feed(dp, bot, callback=make_callback("a:rst:mode", user_id=ADMIN_ID))
+    assert await deps.settings.get("repeat_start_mode") == "message"

@@ -1,6 +1,7 @@
 """Сценарии пользователя: старт, проверка подписки, выдача материала."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -52,6 +53,26 @@ async def send_repeat_start(bot, deps, chat_id: int, user=None) -> None:
         await send_block(block, bot, chat_id, user=user, users=deps.users, limiter=deps.limiter)
 
 
+RESTART_COOLDOWN_SECONDS = 60   # повторное нажатие /start сразу после выдачи урока ничего не перезапускает
+_restart_lock = asyncio.Lock()  # два /start подряд не должны выдать урок дважды
+
+
+async def restart_funnel(bot, deps, chat_id: int, now: int | None = None) -> bool:
+    """Режим «перезапуск воронки» на повторный /start: урок выдаётся заново и прогрев идёт с самого начала
+    по тем же шагам, файлам, кнопкам и задержкам (всё берётся из настроенной воронки, ничего не копируется).
+    Кружок и проверка подписки пропускаются; личную ссылку в закрытый канал повторно не шлём.
+    False — перезапуска не было (урока ещё не было, слишком рано после предыдущей выдачи, заблокировал бота)."""
+    now = int(now if now is not None else time.time())
+    async with _restart_lock:
+        user = await deps.users.get(chat_id)
+        if not user or not user["material_sent_at"]:
+            return False
+        if now - int(user["material_sent_at"]) < RESTART_COOLDOWN_SECONDS:
+            return False
+        await deps.users.restart(chat_id)
+        return await deliver_material_once(bot, deps, chat_id, send_invite=False, now=now)
+
+
 async def migrate_repeat_start_blocks(deps) -> None:
     """Одноразовая миграция: старый already_started_text → первый блок.
 
@@ -76,7 +97,10 @@ async def start_flow(bot, deps, tg_user, chat_id: int, payload: str | None = Non
     )
     user = await deps.users.get(tg_user.id)
     if user["material_sent_at"]:
-        await send_repeat_start(bot, deps, chat_id, user=user)
+        if (await deps.settings.get("repeat_start_mode")).strip() == "restart":
+            await restart_funnel(bot, deps, chat_id)
+        else:
+            await send_repeat_start(bot, deps, chat_id, user=user)
         return
     if is_new:
         await send_welcome(bot, deps, chat_id)

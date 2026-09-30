@@ -160,6 +160,16 @@ class UsersRepo:
         )
         await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
 
+    async def restart(self, tg_id: int) -> None:
+        """Перезапуск воронки по повторному /start: как reset(), но человек остаётся «тем же»:
+        источник, время первого захода, подписка, личная ссылка и тестовый режим сохраняются."""
+        await self.db.execute(
+            "UPDATE users SET material_sent_at = NULL, funnel_started_at = NULL, lesson_clicked_at = NULL, "
+            "deliver_claim_at = NULL, status = 'active' WHERE tg_id = ?",
+            (tg_id,),
+        )
+        await self.db.execute("DELETE FROM user_steps WHERE user_id = ?", (tg_id,))
+
     async def segment_ids(self, segment: str, value: str | None = None) -> list[int]:
         excl_sql, excl_params = self._admin_exclusion()
         if segment == "source":
