@@ -15,6 +15,7 @@ from aiogram.types import (
     ChatMemberLeft,
     ChatMemberMember,
     Message,
+    MessageEntity,
     MessageId,
     Update,
     User,
@@ -38,6 +39,7 @@ class MockSession(BaseSession):
         super().__init__()
         self.requests: list = []
         self.subscribed = subscribed
+        self.keep_custom_emoji = False  # True — имитируем бота, которому Telegram разрешил кастомные эмодзи
 
     def names(self) -> list[str]:
         return [type(r).__name__ for r in self.requests]
@@ -80,11 +82,17 @@ class MockSession(BaseSession):
                 username=chat_id.lstrip("@") if isinstance(chat_id, str) else None,
             )
         if name.startswith("Send"):
+            sent_text = getattr(method, "text", None) or getattr(method, "caption", None)
+            entities = None
+            if self.keep_custom_emoji and sent_text and "<tg-emoji" in sent_text:
+                entities = [MessageEntity(type="custom_emoji", offset=0, length=2, custom_emoji_id="1")]
             return Message(
                 message_id=len(self.requests) + 100,
                 date=datetime.now(timezone.utc),
                 chat=Chat(id=getattr(method, "chat_id", USER_ID), type="private"),
                 from_user=BOT_USER,
+                text=sent_text if name == "SendMessage" else None,
+                entities=entities if name == "SendMessage" else None,
             )
         return True
 
@@ -1097,7 +1105,7 @@ async def test_settings_holds_only_general_things(stack):
     dp, bot, session, deps = stack
     _, markup = await _open(dp, bot, session, "a:set")
     cbs = _callbacks(markup)
-    assert cbs == ["a:media", "a:set:texts", "a:set:report", "a:acc", "a:menu"]
+    assert cbs == ["a:media", "a:set:texts", "a:set:emoji", "a:set:report", "a:acc", "a:menu"]
 
 
 async def test_flow_steps_return_to_flow_and_media_to_settings(stack):
@@ -1838,3 +1846,35 @@ async def test_material_and_repeat_start_previews_warn_about_custom_emoji(stack)
     session.requests.clear()
     await feed(dp, bot, callback=make_callback(f"a:rst:prev:{rst_id}", user_id=ADMIN_ID))
     assert any("Premium" in (m.text or "") for m in session.calls("SendMessage"))
+
+
+async def test_emoji_check_reports_missing_premium_and_shows_warning_in_menu(stack):
+    dp, bot, session, deps = stack
+    session.keep_custom_emoji = False
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:set:emoji", user_id=ADMIN_ID))
+    sent = [m.text for m in session.calls("SendMessage")]
+    assert any("<tg-emoji" in (t or "") for t in sent)                      # пробный пост с кастомным эмодзи
+    report = " ".join(m.text for m in session.calls("EditMessageText"))
+    assert "не работают" in report and "Premium" in report
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:menu", user_id=ADMIN_ID))
+    assert "Кастомные эмодзи не показываются" in session.calls("EditMessageText")[-1].text
+
+
+async def test_emoji_check_reports_success_and_clears_warning(stack):
+    dp, bot, session, deps = stack
+    session.keep_custom_emoji = True
+    await feed(dp, bot, callback=make_callback("a:set:emoji", user_id=ADMIN_ID))
+    report = " ".join(m.text for m in session.calls("EditMessageText"))
+    assert "работают" in report and "не работают" not in report
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:menu", user_id=ADMIN_ID))
+    assert "Кастомные эмодзи не показываются" not in session.calls("EditMessageText")[-1].text
+
+
+async def test_settings_screen_has_emoji_check_button(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, callback=make_callback("a:set", user_id=ADMIN_ID))
+    labels = [b.text for row in session.calls("EditMessageText")[-1].reply_markup.inline_keyboard for b in row]
+    assert "✨ Проверка кастомных эмодзи" in labels

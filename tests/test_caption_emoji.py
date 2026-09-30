@@ -157,3 +157,27 @@ def test_forwarded_photo_caption_keeps_custom_emoji_and_formatting():
     text = message_text(message)
     assert '<tg-emoji emoji-id="5368324170671202286">😀</tg-emoji>' in text
     assert "<b>жирный</b>" in text and '<a href="https://x.ru">ссылка</a>' in text
+
+
+async def test_real_sends_update_custom_emoji_status():
+    content.set_custom_emoji_status(None)
+    await send_block(ContentBlock("Просто текст", None, None), Bot(), 1)
+    assert content.get_custom_emoji_status() is None                   # без эмодзи ничего не узнали
+    await send_block(ContentBlock(f"Привет {EMOJI}", None, None), Bot(keep_custom_emoji=False), 1)
+    assert content.get_custom_emoji_status() is False
+    await send_block(ContentBlock(f"Привет {EMOJI}", None, None), Bot(keep_custom_emoji=True), 1)
+    assert content.get_custom_emoji_status() is True
+    content.set_custom_emoji_status(None)
+
+
+async def test_probe_custom_emoji_returns_true_false_or_none():
+    from bot.emoji_check import probe_custom_emoji
+
+    assert await probe_custom_emoji(Bot(keep_custom_emoji=True), 1) is True
+    assert await probe_custom_emoji(Bot(keep_custom_emoji=False), 1) is False
+
+    class Broken:
+        async def send_message(self, *a, **k):
+            raise TelegramBadRequest(method=SendPhoto(chat_id=1, photo="x"), message="Bad Request: chat not found")
+
+    assert await probe_custom_emoji(Broken(), 1) is None                # проверить не удалось — не гадаем

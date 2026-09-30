@@ -350,6 +350,11 @@ docs/client-guide/generate_pdf.py`) → закоммитить оба файла
 купленные на Fragment юзернеймы); иначе сущность молча игнорируется. Кодом не обойти — `SendOutcome.custom_emoji_lost`
 (ответ Telegram без custom_emoji-сущностей) + `common.send_preview`/`preview_notes` предупреждают админа в «👁 Показать»
 (шаг, сообщение шага, материал, повторный /start, рассылка).
+Проверка Premium у владельца: прямого API нет (бот не знает владельца), поэтому `bot/emoji_check.probe_custom_emoji` шлёт пробное
+сообщение с кастомным эмодзи (id из примера Bot API) и смотрит, вернулась ли custom_emoji-сущность. Кнопка «✨ Проверка
+кастомных эмодзи» (`a:set:emoji`, настройки). Состояние `content.get/set_custom_emoji_status` (None/True/False) обновляется
+при ЛЮБОЙ реальной отправке с `<tg-emoji>` (`sender.send_block`); при False в `menu_text` главного меню — предупреждение.
+Состояние в процессе, не в БД; `tests/conftest.py` сбрасывает его между тестами.
 Раньше лимит подписи 1024 сравнивался с длиной HTML-строки, и посты с эмодзи/ссылками резались на два сообщения.
 Теперь `content.visible_len` (без тегов, сущности раскрыты). Лимит подписи оптимистичный — `PREMIUM_CAPTION_LIMIT` 2048
 (`content.get/set_caption_limit`, состояние процесса); если Telegram отвечает «caption is too long», `sender.send_block`

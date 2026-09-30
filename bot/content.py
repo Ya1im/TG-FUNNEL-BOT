@@ -18,6 +18,18 @@ _caption_limit = PREMIUM_CAPTION_LIMIT   # оптимистично; если Te
 _TAG_RE = re.compile(r"<[^>]*>")
 
 
+_custom_emoji_ok: bool | None = None   # None — ещё не знаем; берётся из ответов Telegram на реальные отправки и проверки
+
+
+def get_custom_emoji_status() -> bool | None:
+    return _custom_emoji_ok
+
+
+def set_custom_emoji_status(value: bool | None) -> None:
+    global _custom_emoji_ok
+    _custom_emoji_ok = value
+
+
 def get_caption_limit() -> int:
     return _caption_limit
 

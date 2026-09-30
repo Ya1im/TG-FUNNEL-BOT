@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
+from bot import content
 from bot.handlers.admin import (
     access,
     broadcast,
@@ -60,11 +61,16 @@ async def menu_text(deps) -> str:
         if await preprod.is_enabled(deps.settings)
         else ""
     )
+    emoji_line = (
+        "\n⚠️ <b>Кастомные эмодзи не показываются</b> — у владельца бота нет Premium (Настройки → Проверка кастомных эмодзи)"
+        if content.get_custom_emoji_status() is False
+        else ""
+    )
     return (
         "🛠 <b>Админка</b>\n\n"
         f"👥 Людей: {stats_data['total']} "
         f"(активных {stats_data['active']}, заблокировали {stats_data['blocked']})\n\n"
-        f"{verdict}{preprod_line}"
+        f"{verdict}{preprod_line}{emoji_line}"
     )
 
 

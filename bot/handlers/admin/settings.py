@@ -77,6 +77,7 @@ async def settings_screen(target, deps, is_owner: bool) -> None:
     rows = [
         [("🎬 Медиатека", "a:media")],
         [("✏️ Все тексты и кнопки", "a:set:texts")],
+        [("✨ Проверка кастомных эмодзи", "a:set:emoji")],
     ]
     if is_owner:
         # Чат для отчётов и доступ к админке — опасные/технические настройки,
@@ -89,6 +90,40 @@ async def settings_screen(target, deps, is_owner: bool) -> None:
         screen_text("⚙️ Настройки", "Общее для всего бота. Шаги воронки — в разделе «Воронка».", body),
         kb(rows),
     )
+
+
+def emoji_report(ok: bool | None, account_premium: bool | None) -> str:
+    if ok is True:
+        return (
+            "✅ <b>Кастомные эмодзи работают.</b>\n\nTelegram принял их в сообщении бота: у владельца бота "
+            "(аккаунта, создавшего бота в @BotFather) есть Premium. Люди будут видеть ваши эмодзи в постах и рассылках."
+        )
+    if ok is False:
+        mine = {
+            True: "Ваш аккаунт с Premium, но бот, похоже, создан другим аккаунтом: Premium нужен именно владельцу бота.",
+            False: "У вашего аккаунта Premium не обнаружен.",
+            None: "",
+        }[account_premium]
+        return (
+            "❌ <b>Кастомные эмодзи не работают.</b>\n\nTelegram отбросил их в сообщении бота, люди видят обычные эмодзи. "
+            "Нужен активный Telegram Premium у владельца бота, то есть у аккаунта, который создал бота в @BotFather "
+            "(Premium у другого аккаунта не помогает). Если Premium куплен только что, подождите минуту и проверьте ещё раз. "
+            + mine
+        ).strip()
+    return "⚠️ Не удалось проверить: Telegram не принял пробное сообщение. Попробуйте ещё раз чуть позже."
+
+
+@router.callback_query(F.data == "a:set:emoji")
+async def cb_emoji_check(call: CallbackQuery) -> None:
+    from bot.emoji_check import probe_custom_emoji
+
+    ok = await probe_custom_emoji(call.bot, call.message.chat.id)
+    await show(
+        call,
+        screen_text("✨ Кастомные эмодзи", "Бот отправил вам пробное сообщение — так выглядит проверка.", emoji_report(ok, call.from_user.is_premium)),
+        kb([[("🔄 Проверить ещё раз", "a:set:emoji")], [("⬅️ Назад", "a:set")]]),
+    )
+    await call.answer()
 
 
 @router.callback_query(F.data == "a:set")

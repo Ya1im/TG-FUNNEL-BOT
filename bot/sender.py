@@ -129,10 +129,18 @@ async def send_block(
     outcome.caption_split = block.caption_overflow(user)
     if outcome.ok:
         outcome.custom_emoji_lost = _custom_emoji_lost(block, user, outcome.result)
+        if _custom_emoji_checked(block, outcome.result):
+            # любая реальная отправка с кастомным эмодзи показывает, принимает ли их Telegram для этого бота
+            content.set_custom_emoji_status(not outcome.custom_emoji_lost)
     return outcome
 
 
 _TOO_LONG_RE = re.compile(r"too[ _]long", re.IGNORECASE)
+
+
+def _custom_emoji_checked(block, result) -> bool:
+    """По ответу Telegram можно судить о кастомных эмодзи: они были в тексте и форма ответа понятна."""
+    return "<tg-emoji" in (block.text or "") and (hasattr(result, "entities") or hasattr(result, "caption_entities"))
 
 
 def _custom_emoji_lost(block, user, result) -> bool:

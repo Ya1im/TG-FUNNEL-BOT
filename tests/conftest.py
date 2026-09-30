@@ -45,3 +45,16 @@ async def db(tmp_path):
     database = await Database(tmp_path / "test.db").connect()
     yield database
     await database.close()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def reset_content_state():
+    """Состояние процесса (лимит подписи, признак работы кастомных эмодзи) не должно перетекать между тестами."""
+    from bot import content
+
+    content.set_caption_limit(content.PREMIUM_CAPTION_LIMIT)
+    content.set_custom_emoji_status(None)
+    yield
