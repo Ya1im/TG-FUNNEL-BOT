@@ -295,21 +295,6 @@ async def test_reenabling_already_enabled_step_is_noop_for_backfill(db):
     assert after == before
 
 
-async def test_import_json_does_not_backfill_existing_users(db):
-    """import_json полностью пересобирает цепочку — это не «добавление нового шага», а массовая
-    загрузка; бэкфилл здесь не должен срабатывать (иначе старым пользователям задним числом
-    придёт вся цепочка сразу, а история отправок стёрта DELETE и не с чем сверяться)."""
-    users, funnel = UsersRepo(db), FunnelRepo(db)
-    await users.upsert(1)
-    await db.execute("UPDATE users SET material_sent_at = 1000 WHERE tg_id = 1")
-    await funnel.add_step(3600, text="Раз")
-    raw = await funnel.export_json()
-
-    await funnel.import_json(raw, MediaRepo(db))
-
-    assert await db.fetchall("SELECT 1 FROM user_steps") == []
-
-
 async def test_seed_style_bulk_add_does_not_backfill_existing_users(db):
     """add_step(..., backfill=False) — тот же режим массовой загрузки, что использует import_json
     и bot/seed.py при первом наполнении пустой воронки."""

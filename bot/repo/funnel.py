@@ -241,6 +241,31 @@ class FunnelRepo:
             await self.normalize_users(await self._users_with_pending(step_id))
         elif "position" in fields:
             await self.normalize_all()
+        if "delay_seconds" in fields:
+            await self._retime_waiting(step_id)
+
+    async def _retime_waiting(self, step_id: int, now: int | None = None) -> None:
+        """Задержку шага поменяли — у тех, кто его сейчас ждёт (он головной), срок считается заново:
+        «последняя отправка человека + новая задержка», но не раньше «сейчас» (залпа в прошлое нет)."""
+        now = int(now if now is not None else time.time())
+        step = await self.get_step(step_id)
+        if step is None or not int(step["enabled"]):
+            return
+        for user_id in await self._users_with_pending(step_id):
+            head = await self.head_row(user_id)
+            user = await self.db.fetchone("SELECT funnel_fast, material_sent_at FROM users WHERE tg_id = ?", (user_id,))
+            if head is None or user is None or user["funnel_fast"]:
+                continue
+            head_step = await self.db.fetchval("SELECT step_id FROM user_steps WHERE id = ?", (head["id"],))
+            if int(head_step) != int(step_id):
+                continue
+            base = await self.db.fetchval(
+                "SELECT MAX(sent_at) FROM user_steps WHERE user_id = ? AND status = 'sent'", (user_id,)
+            ) or user["material_sent_at"]
+            if not base:
+                continue
+            due = max(now, int(base) + int(step["delay_seconds"]))
+            await self.db.execute("UPDATE user_steps SET due_at = ? WHERE id = ?", (due, head["id"]))
 
     async def set_messages(self, step_id: int, items: list[dict]) -> None:
         """Заменить все сообщения шага: первое — в прежние колонки, остальные — в extra_messages_json."""
@@ -466,6 +491,7 @@ class FunnelRepo:
             extras = item.get("extra_messages") or []
             if not isinstance(extras, list) or not all(isinstance(extra, dict) for extra in extras):
                 raise ValueError("extra_messages должен быть списком сообщений")
+        progress = await self._received_counts()
         await self.db.execute("DELETE FROM user_steps")
         await self.db.execute("DELETE FROM funnel_steps")
         count = 0
@@ -498,7 +524,45 @@ class FunnelRepo:
             if not item.get("enabled", True):
                 await self.update_step(step_id, enabled=0)
             count += 1
+        await self._restore_progress(progress)
         return count
+
+    async def _received_counts(self) -> dict[int, int]:
+        """Сколько шагов цепочки у каждого человека уже «закрыто» (получен, пропущен): номер последнего
+        закрытого шага по порядку цепочки. Нужно, чтобы замена воронки не стирала прогресс."""
+        order = {int(s["id"]): index for index, s in enumerate(await self.list_steps(), start=1)}
+        rows = await self.db.fetchall("SELECT user_id, step_id FROM user_steps WHERE status != 'pending'")
+        done: dict[int, int] = {}
+        for row in rows:
+            rank = order.get(int(row["step_id"]), 0)
+            done[int(row["user_id"])] = max(done.get(int(row["user_id"]), 0), rank)
+        return done
+
+    async def _restore_progress(self, done: dict[int, int], now: int | None = None) -> int:
+        """После замены цепочки: каждому активному человеку с выданным уроком — первые `done` шагов нового
+        списка считаются полученными, остальные включённые ждут своей очереди. Срок получает только
+        ближайший («сейчас + задержка»), поэтому пачкой ничего не уходит."""
+        steps = list(await self.list_steps())
+        users = await self.db.fetchall(
+            "SELECT tg_id FROM users WHERE material_sent_at IS NOT NULL AND status = 'active'"
+        )
+        values = []
+        for user in users:
+            known = done.get(int(user["tg_id"]), 0)
+            for index, step in enumerate(steps, start=1):
+                if index <= known:
+                    values.append((user["tg_id"], step["id"], NOT_SCHEDULED, "skipped", "получен по прежней воронке"))
+                elif step["enabled"]:
+                    values.append((user["tg_id"], step["id"], NOT_SCHEDULED, "pending", None))
+        if values:
+            await self.db.conn.executemany(
+                "INSERT OR IGNORE INTO user_steps(user_id, step_id, due_at, status, last_error) VALUES(?, ?, ?, ?, ?)",
+                values,
+            )
+            await self.db.conn.commit()
+        affected = [int(u["tg_id"]) for u in users]
+        await self.normalize_users(affected, now)
+        return len(affected)
 
 
 def block_from_row(row) -> ContentBlock:
