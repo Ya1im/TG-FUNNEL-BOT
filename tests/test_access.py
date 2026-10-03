@@ -73,9 +73,9 @@ async def test_report_counts_funnel_sources_and_excludes_admin(db):
     text = await build_report(deps)
 
     assert "Статистика" in text
-    assert "Всего: 4" in text and "заблокировали бота: 1" in text
-    assert "Подписаны на канал: 2 (50%)" in text
-    assert "Получили материал: 1 (25%)" in text
+    assert "Всего — 4" in text and "Заблокировали бота — 1" in text
+    assert "Подписаны на канал — 2 (50%)" in text
+    assert "Получили материал — 1 (25%)" in text
     assert "reels — 2" in text and "tiktok — 1" in text
 
 
@@ -98,4 +98,4 @@ async def test_report_shows_warmup_steps_and_recent_broadcasts(db):
 
 async def test_report_is_well_formed_on_empty_database(db):
     text = await build_report(_deps(db))
-    assert "Всего: 0" in text and len(text) < 4000
+    assert "Всего — 0" in text and len(text) < 4000

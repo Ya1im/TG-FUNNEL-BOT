@@ -920,7 +920,7 @@ async def test_admin_excluded_from_stats_screen(stack):
     edits = session.calls("EditMessageText")
     assert edits, "ожидали правку меню со статистикой"
     text = edits[-1].text
-    assert "Всего: 1" in text
+    assert "Всего — 1" in text
 
 
 async def test_stats_file_button_sends_document(stack):
@@ -1950,3 +1950,54 @@ async def test_removing_client_clears_personal_menu(stack):
     await feed(dp, bot, callback=make_callback("a:acc:delok:555", user_id=ADMIN_ID))
     assert session.calls("DeleteMyCommands")
     assert await deps.access.role(555) is None
+
+
+async def test_admin_screen_and_client_stats_share_one_report_format(stack):
+    """Экран статистики в админке и /stats у клиента — один и тот же отчёт (блоки и формулировки)."""
+    dp, bot, session, deps = stack
+    await deps.users.upsert(1, "u1", "Вася", source="ig_reels")
+    await deps.users.upsert(2, "u2", "Петя", source="tt")
+    await deps.access.add(VIEWER_ID, "Клиент", "client")
+
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    admin_text = session.calls("EditMessageText")[-1].text
+
+    session.requests.clear()
+    await feed(dp, bot, message=make_message("/stats", user_id=VIEWER_ID))
+    client_text = session.calls("SendMessage")[0].text
+
+    for text in (admin_text, client_text):
+        assert "📱 <b>Откуда пришли</b>" in text
+        assert "Instagram — 1 (50%)" in text and "TikTok — 1 (50%)" in text
+    body = client_text.split("\n", 1)[1]                      # без строки с датой/временем
+    assert body in admin_text
+
+
+async def test_stats_screen_links_button_shows_instagram_and_tiktok_links(stack):
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/admin", user_id=ADMIN_ID))
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat", user_id=ADMIN_ID))
+    markup = session.calls("EditMessageText")[-1].reply_markup
+    assert "a:stat:links" in _callbacks(markup)
+
+    session.requests.clear()
+    await feed(dp, bot, callback=make_callback("a:stat:links", user_id=ADMIN_ID))
+    text = session.calls("EditMessageText")[-1].text
+    assert "https://t.me/funnel_bot?start=ig" in text
+    assert "https://t.me/funnel_bot?start=tt" in text
+
+
+async def test_link_tag_lands_in_platform_stats(stack):
+    """Человек, пришедший по ссылке ?start=ig / ?start=tt, попадает в нужную платформу."""
+    dp, bot, session, deps = stack
+    await feed(dp, bot, message=make_message("/start ig", user_id=501))
+    await feed(dp, bot, message=make_message("/start tt", user_id=502))
+    await feed(dp, bot, message=make_message("/start ig", user_id=502))      # первая метка сохраняется
+    from bot.stats_report import collect
+
+    data = await collect(deps)
+    by_key = {p["key"]: p["total"] for p in data["platforms"]}
+    assert by_key["instagram"] == 1 and by_key["tiktok"] == 1

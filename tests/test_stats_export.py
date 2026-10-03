@@ -1,4 +1,5 @@
 """Пересборка сводной .xlsx-таблицы: содержимое, файл на диске, интервал хука."""
+from bot.repo.broadcasts import BroadcastsRepo
 from bot.repo.funnel import FunnelRepo
 from bot.repo.settings import SettingsRepo
 from bot.repo.users import UsersRepo
@@ -13,6 +14,7 @@ class FakeDeps:
         self.users = UsersRepo(db, admin_ids=admin_ids)
         self.settings = SettingsRepo(db)
         self.funnel = FunnelRepo(db, admin_ids=admin_ids)
+        self.broadcasts = BroadcastsRepo(db)
 
 
 async def test_build_workbook_excludes_admin_and_lists_users(db):

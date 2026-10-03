@@ -14,6 +14,8 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from bot.stats_report import PLATFORMS, collect, platform_of, sections
+
 log = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_MIN = 60
@@ -24,31 +26,25 @@ def export_path(db) -> Path:
 
 
 async def build_workbook(deps) -> Workbook:
-    stats = await deps.users.stats()
-    sources = await deps.users.sources()
+    data = await collect(deps)
     rows = await deps.users.export_rows()
 
     wb = Workbook()
     summary = wb.active
     summary.title = "Сводка"
     summary.append(["Собрано", time.strftime("%Y-%m-%d %H:%M:%S")])
-    summary.append([])
-    summary.append(["Метрика", "Значение"])
-    summary.append(["Всего", stats["total"]])
-    summary.append(["Активных", stats["active"]])
-    summary.append(["Заблокировали бота", stats["blocked"]])
-    summary.append(["Подписаны на канал", stats["subscribed"]])
-    summary.append(["Получили материал", stats["got_material"]])
-    summary.append(["Пришли за сутки", stats["today"]])
-    summary.append([])
-    summary.append(["Источник", "Кол-во"])
-    for src, cnt in sources:
-        summary.append([src, cnt])
+    # Те же секции и в том же порядке, что в Telegram-отчёте (bot/stats_report.py)
+    for title, section_rows in sections(data):
+        summary.append([])
+        summary.append([title, "Значение"])
+        for label, value in section_rows:
+            summary.append([label, value])
 
     users_sheet = wb.create_sheet("Пользователи")
     users_sheet.append(
-        ["tg_id", "username", "имя", "старт", "источник", "статус", "подписан", "материал выдан"]
+        ["tg_id", "username", "имя", "старт", "источник", "платформа", "статус", "подписан", "материал выдан"]
     )
+    labels = dict(PLATFORMS)
     for r in rows:
         users_sheet.append(
             [
@@ -57,6 +53,7 @@ async def build_workbook(deps) -> Workbook:
                 r["first_name"] or "",
                 _fmt(r["started_at"]),
                 r["source"] or "",
+                labels[platform_of(r["source"])],
                 r["status"],
                 "да" if r["is_subscribed"] else "нет",
                 _fmt(r["material_sent_at"]),

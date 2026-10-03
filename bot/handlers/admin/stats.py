@@ -9,33 +9,25 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.handlers.admin.common import ReportChatSet, kb, require_owner, show
 from bot.stats_export import export_path, make_export
+from bot.stats_report import build_report
 
 router = Router(name="admin-stats")
 
 
 async def stats_screen(target, deps, is_owner: bool) -> None:
-    stats = await deps.users.stats()
-    sources = await deps.users.sources()
-    pending = await deps.funnel.pending_count()
+    # Тот же текст, что у клиентов в /stats (bot/stats_report.py): один формат везде.
     report_chat = (await deps.settings.get("report_chat_id")).strip() or "не задан"
     interval = await deps.settings.get_int("stats_export_interval_min") or 60
-    lines = [f"• {src}: {cnt}" for src, cnt in sources]
     text = (
-        "📊 <b>Статистика</b>\n\n"
-        f"👥 Всего: {stats['total']}\n"
-        f"✅ Активных: {stats['active']}\n"
-        f"🚫 Заблокировали бота: {stats['blocked']}\n\n"
-        f"📢 Подписаны на канал: {stats['subscribed']}\n"
-        f"🎁 Получили материал: {stats['got_material']}\n"
-        f"⏳ В очереди прогрева: {pending}\n\n"
-        f"🆕 Пришли за сутки: {stats['today']}\n\n"
-        "<b>Источники:</b>\n" + ("\n".join(lines) if lines else "нет данных") + "\n\n"
-        f"📑 Таблица пересобирается каждые {interval} мин.\n"
-        f"📤 Чат для пересылки: <code>{report_chat}</code>"
+        await build_report(deps)
+        + "\n\n"
+        + f"📑 Таблица пересобирается каждые {interval} мин.\n"
+        + f"📤 Чат для пересылки: <code>{report_chat}</code>"
     )
     rows = [
         [("📥 Скачать таблицу", "a:stat:file")],
         [("📤 Переслать эксперту", "a:stat:send")],
+        [("🔗 Ссылки для соцсетей", "a:stat:links")],
     ]
     if is_owner:
         # Чат для пересылки и обнуление статистики — владельческие/опасные действия.
@@ -44,6 +36,26 @@ async def stats_screen(target, deps, is_owner: bool) -> None:
     rows.append([("🔄 Обновить", "a:stat")])
     rows.append([("⬅️ Назад", "a:menu")])
     await show(target, text, kb(rows))
+
+
+@router.callback_query(F.data == "a:stat:links")
+async def cb_stats_links(call: CallbackQuery, deps) -> None:
+    me = await call.bot.me()
+    base = f"https://t.me/{me.username}?start="
+    text = (
+        "🔗 <b>Ссылки для соцсетей</b>\n\n"
+        "Вставьте каждую в свою соцсеть — тогда в статистике («📱 Откуда пришли») будет видно, "
+        "сколько людей пришло из Instagram и из TikTok.\n\n"
+        f"📸 Instagram:\n<code>{base}ig</code>\n\n"
+        f"🎵 TikTok:\n<code>{base}tt</code>\n\n"
+        "Нажмите на ссылку, чтобы скопировать.\n\n"
+        "ℹ️ Считается первая ссылка, по которой человек пришёл. Те, кто пришёл по старой ссылке "
+        "без метки (или до этой настройки), попадают в «Другие / без метки».\n"
+        "Для разных мест можно добавлять хвост: <code>ig_reels</code>, <code>tt_bio</code> — "
+        "они всё равно посчитаются как Instagram и TikTok."
+    )
+    await show(call, text, kb([[("⬅️ К статистике", "a:stat")]]))
+    await call.answer()
 
 
 async def _ensure_file(deps) -> Path:

@@ -212,6 +212,15 @@ class UsersRepo:
         )
         return [(r["src"], r["cnt"]) for r in rows]
 
+    async def platform_rows(self):
+        """Для разбивки по платформам: метка, старт, статус, подписка, материал — без админов."""
+        excl_sql, excl_params = self._admin_exclusion()
+        return await self.db.fetchall(
+            "SELECT source, started_at, status, is_subscribed, material_sent_at "
+            f"FROM users WHERE {excl_sql}",
+            excl_params,
+        )
+
     async def export_rows(self):
         """Строки для таблицы статистики — без учёта админа (см. _admin_exclusion)."""
         excl_sql, excl_params = self._admin_exclusion()
