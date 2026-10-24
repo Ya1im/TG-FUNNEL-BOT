@@ -81,6 +81,16 @@ class MockSession(BaseSession):
                 type="private",
                 username=chat_id.lstrip("@") if isinstance(chat_id, str) else None,
             )
+        if name == "SendMediaGroup":
+            return [
+                Message(
+                    message_id=len(self.requests) * 10 + 100 + index,
+                    date=datetime.now(timezone.utc),
+                    chat=Chat(id=getattr(method, "chat_id", USER_ID), type="private"),
+                    from_user=BOT_USER,
+                )
+                for index, _ in enumerate(method.media)
+            ]
         if name.startswith("Send"):
             sent_text = getattr(method, "text", None) or getattr(method, "caption", None)
             entities = None

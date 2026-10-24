@@ -62,7 +62,7 @@ class BroadcastEngine:
         progress: Callable[[dict], Awaitable[None]] | None = None,
     ) -> dict[str, int]:
         broadcast = await self.broadcasts.get(broadcast_id)
-        if broadcast is None or broadcast["status"] in ("done", "cancelled"):
+        if broadcast is None or broadcast["status"] in ("done", "cancelled", "recalled"):
             return await self.broadcasts.stats(broadcast_id)
 
         messages = await self.broadcasts.messages(broadcast_id)
@@ -76,6 +76,9 @@ class BroadcastEngine:
                 break
             allowed = await self._allowed()
             for user_id in targets:
+                if await self.broadcasts.status(broadcast_id) != "running":
+                    # «Остановить» нажали (или рассылку убрали) — прекращаем сразу, а не после пачки в 100 человек
+                    return await self.broadcasts.stats(broadcast_id)
                 if allowed is not None and user_id not in allowed:
                     # предпрод включили, пока рассылка ждала: настоящим людям ничего не уходит
                     await self.broadcasts.mark_target(broadcast_id, user_id, "skipped", "предпрод")
@@ -86,10 +89,11 @@ class BroadcastEngine:
                     last_progress = self.now()
                     await progress(await self.broadcasts.stats(broadcast_id))
             current = await self.broadcasts.get(broadcast_id)
-            if current is None or current["status"] == "cancelled":
+            if current is None or current["status"] != "running":
                 return await self.broadcasts.stats(broadcast_id)
 
-        await self.broadcasts.set_status(broadcast_id, "done")
+        if not await self.broadcasts.finish_if_running(broadcast_id):
+            return await self.broadcasts.stats(broadcast_id)  # остановили на последнем получателе
         stats = await self.broadcasts.stats(broadcast_id)
         if progress:
             await progress(stats)
@@ -146,6 +150,7 @@ class BroadcastEngine:
                     media_kind=msg.get("media_kind"),
                     file_id=msg.get("file_id"),
                     buttons=msg.get("buttons") or [],
+                    album=msg.get("album") or None,
                 )
                 outcome = await send_block(
                     block, self.bot, user_id, user=user, users=self.users, limiter=self.limiter

@@ -163,3 +163,39 @@ async def run_recall(bot, deps, since: int, cancel_pending: bool = True, now: in
         if funnel is not None:
             await funnel.normalize_users([r["user_id"] for r in rows], now)
     return result
+
+
+async def run_broadcast_recall(bot, deps, broadcast_id: int, now: int | None = None) -> dict[str, int]:
+    """Удалить у всех получателей сообщения ОДНОЙ рассылки — точно, по журналу номеров.
+
+    Журнал пишется при отправке (kind='broadcast', ref_id=id рассылки), поэтому задеваются только её
+    сообщения: посты прогрева и другие рассылки остаются. Telegram не даёт удалять сообщения старше
+    48 часов — такие не трогаем и показываем в отчёте. Рассылка получает статус «recalled» (её нельзя
+    запустить заново), но только если у всех получилось: при сбое у кого-то журнал этих людей остаётся,
+    и кнопку можно нажать ещё раз."""
+    now = int(now if now is not None else time.time())
+    rows = await deps.sent_log.for_ref("broadcast", broadcast_id)
+    per_user: dict[int, list[int]] = {}
+    too_old = 0
+    for row in rows:
+        if row["sent_at"] < now - MAX_AGE_SECONDS:
+            too_old += 1
+            continue
+        per_user.setdefault(row["user_id"], []).append(row["message_id"])
+    result = {"users": 0, "messages": 0, "blocked": 0, "failed": 0, "too_old": too_old}
+    failed_users: set[int] = set()
+    for user_id, ids in per_user.items():
+        try:
+            await _delete(bot, deps, user_id, sorted(set(ids)))
+            result["users"] += 1
+            result["messages"] += len(ids)
+        except TelegramForbiddenError:
+            result["blocked"] += 1
+        except TelegramAPIError as exc:
+            log.warning("Не смог удалить рассылку #%s у %s: %s", broadcast_id, user_id, exc)
+            failed_users.add(user_id)
+            result["failed"] += 1
+    await deps.sent_log.delete_ref("broadcast", broadcast_id, keep_users=sorted(failed_users))
+    if rows and not failed_users:
+        await deps.broadcasts.set_status(broadcast_id, "recalled")
+    return result

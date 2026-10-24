@@ -66,6 +66,28 @@ class BroadcastsRepo:
                 "UPDATE broadcasts SET status = ? WHERE id = ?", (status, broadcast_id)
             )
 
+    async def claim_run(self, broadcast_id: int) -> bool:
+        """Атомарно взять рассылку в работу. Второй клик по «Отправить» получает False — и не запускает второй прогон."""
+        cur = await self.db.conn.execute(
+            "UPDATE broadcasts SET status = 'running', started_at = ? "
+            "WHERE id = ? AND status IN ('draft', 'queued')",
+            (int(time.time()), broadcast_id),
+        )
+        await self.db.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def finish_if_running(self, broadcast_id: int) -> bool:
+        """«Завершена» — только если её не успели остановить: статус «отменена» затирать нельзя."""
+        cur = await self.db.conn.execute(
+            "UPDATE broadcasts SET status = 'done', finished_at = ? WHERE id = ? AND status = 'running'",
+            (int(time.time()), broadcast_id),
+        )
+        await self.db.conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def status(self, broadcast_id: int) -> str | None:
+        return await self.db.fetchval("SELECT status FROM broadcasts WHERE id = ?", (broadcast_id,))
+
     async def set_sub_mode(self, broadcast_id: int, mode: str) -> None:
         if mode not in SUB_MODES:
             mode = "off"

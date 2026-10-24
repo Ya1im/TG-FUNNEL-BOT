@@ -323,6 +323,7 @@ KIND_ICONS = {
     "voice": "🎙",
     "animation": "🎞",
     "sticker": "😀",
+    "album": "🖼",
 }
 KIND_NAMES = {
     "photo": "фото",
@@ -333,6 +334,7 @@ KIND_NAMES = {
     "voice": "голосовое",
     "animation": "гифка",
     "sticker": "стикер",
+    "album": "альбом",
 }
 
 

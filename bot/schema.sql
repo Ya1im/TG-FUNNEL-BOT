@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     segment_value TEXT,
     messages_json TEXT    NOT NULL,   -- [{"chat_id":..,"message_id":..}]
     scheduled_at  INTEGER,
-    status        TEXT    NOT NULL DEFAULT 'draft',  -- draft|queued|running|done|cancelled
+    status        TEXT    NOT NULL DEFAULT 'draft',  -- draft|queued|running|done|cancelled|recalled
     sub_mode      TEXT    NOT NULL DEFAULT 'off',    -- off | skip | remind: проверка подписки перед отправкой
     started_at    INTEGER,
     finished_at   INTEGER

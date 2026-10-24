@@ -167,9 +167,13 @@ async def _send_block_once(block, bot, chat_id, *, user=None, users=None, limite
                     chat_id,
                 )
                 outcome = await safe_send(fallback, chat_id=chat_id, users=users, limiter=limiter)
-        message_id = getattr(outcome.result, "message_id", None) if outcome.ok else None
-        if isinstance(message_id, int):
-            ids.append(message_id)
+        if outcome.ok and isinstance(outcome.result, list):
+            # альбом: Telegram отвечает списком сообщений — номера нужны все, иначе рассылку не отозвать
+            ids.extend(m.message_id for m in outcome.result if isinstance(getattr(m, "message_id", None), int))
+        else:
+            message_id = getattr(outcome.result, "message_id", None) if outcome.ok else None
+            if isinstance(message_id, int):
+                ids.append(message_id)
         if not outcome.ok:
             outcome.message_ids = ids
             return outcome

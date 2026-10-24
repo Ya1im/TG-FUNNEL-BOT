@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 
 # Типы, у которых нет подписи — текст придётся слать отдельным сообщением
 CAPTIONLESS = {"video_note", "sticker"}
@@ -54,6 +61,9 @@ class ContentBlock:
     media_kind: str | None = None
     file_id: str | None = None
     buttons: list[dict] = field(default_factory=list)
+    # Альбом: [{"kind": "photo|video|document|audio", "file_id": ...}, ...] — уходит одним сообщением-группой.
+    # Telegram не даёт вешать кнопки на альбом, поэтому buttons для него игнорируются.
+    album: list[dict] | None = None
 
     @classmethod
     def from_rows(cls, row: Any, media_row: Any = None) -> "ContentBlock":
@@ -73,7 +83,13 @@ class ContentBlock:
 
     @property
     def is_empty(self) -> bool:
-        return not self.text and not self.file_id
+        return not self.text and not self.file_id and not self.album
+
+    def _captionable(self) -> bool:
+        """Есть медиа, к которому можно приложить подпись (альбом — подпись на первом файле)."""
+        if self.album:
+            return True
+        return bool(self.file_id and self.media_kind and self.media_kind not in CAPTIONLESS)
 
     def keyboard(self) -> InlineKeyboardMarkup | None:
         rows = []
@@ -117,18 +133,12 @@ class ContentBlock:
     def caption_overflow(self, user: Any = None) -> bool:
         """Текст с медиа не помещается в подпись (по известному сейчас лимиту) и уйдёт вторым сообщением."""
         text = self.render(user)
-        return bool(
-            self.file_id and self.media_kind and self.media_kind not in CAPTIONLESS
-            and text and visible_len(text) > get_caption_limit()
-        )
+        return bool(self._captionable() and text and visible_len(text) > get_caption_limit())
 
     def long_caption(self, user: Any = None) -> bool:
         """Подпись длиннее обычного лимита 1024, но уходит одним сообщением (расчёт на Premium-лимит)."""
         text = self.render(user)
-        return bool(
-            self.file_id and self.media_kind and self.media_kind not in CAPTIONLESS
-            and text and CAPTION_LIMIT < visible_len(text) <= get_caption_limit()
-        )
+        return bool(self._captionable() and text and CAPTION_LIMIT < visible_len(text) <= get_caption_limit())
 
     def factories(self, bot: Bot, chat_id: int, user: Any = None) -> list[Factory]:
         """Список отправок: обычно одна, для кружка с текстом — две."""
@@ -136,7 +146,12 @@ class ContentBlock:
         kb = self.keyboard()
         out: list[Factory] = []
 
-        if self.file_id and self.media_kind:
+        if self.album:
+            caption_ok = bool(text) and visible_len(text) <= get_caption_limit()
+            out.append(_bind_album(self.album, bot, chat_id, text if caption_ok else None))
+            if text and not caption_ok:  # подпись не влезла — текст уходит следом отдельным сообщением
+                out.append(_bind(_send_text, bot, chat_id, None, text, kb))
+        elif self.file_id and self.media_kind:
             kind = self.media_kind
             send = _SENDERS.get(kind)
             if send is None:
@@ -156,6 +171,26 @@ class ContentBlock:
 def _bind(func, bot, chat_id, file_id, caption, kb) -> Factory:
     async def call():
         return await func(bot, chat_id, file_id, caption, kb)
+
+    return call
+
+
+# Что Telegram умеет собирать в альбом (документы и аудио — только с такими же)
+ALBUM_KINDS = {
+    "photo": InputMediaPhoto,
+    "video": InputMediaVideo,
+    "document": InputMediaDocument,
+    "audio": InputMediaAudio,
+}
+
+
+def _bind_album(album: list[dict], bot, chat_id, caption) -> Factory:
+    async def call():
+        media = [
+            ALBUM_KINDS[item["kind"]](media=item["file_id"], caption=caption if index == 0 else None)
+            for index, item in enumerate(album)
+        ]
+        return await bot.send_media_group(chat_id, media)
 
     return call
 

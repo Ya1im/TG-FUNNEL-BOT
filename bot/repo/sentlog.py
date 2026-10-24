@@ -37,6 +37,23 @@ class SentLogRepo:
             (int(since),),
         )
 
+    async def for_ref(self, kind: str, ref_id: int):
+        """Все сообщения одной рассылки (или шага): кому и под какими номерами они ушли."""
+        return await self.db.fetchall(
+            "SELECT user_id, message_id, sent_at FROM sent_messages WHERE kind = ? AND ref_id = ? "
+            "ORDER BY user_id, message_id",
+            (kind, ref_id),
+        )
+
+    async def delete_ref(self, kind: str, ref_id: int, keep_users=()) -> None:
+        keep = list(keep_users)
+        marks = ",".join("?" for _ in keep)
+        await self.db.execute(
+            "DELETE FROM sent_messages WHERE kind = ? AND ref_id = ?"
+            + (f" AND user_id NOT IN ({marks})" if keep else ""),
+            (kind, ref_id, *keep),
+        )
+
     async def delete_since(self, since: int, keep_users=()) -> None:
         keep = list(keep_users)
         marks = ",".join("?" for _ in keep)

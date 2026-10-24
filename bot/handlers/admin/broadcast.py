@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -12,7 +13,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.content import ContentBlock
+from bot.content import ALBUM_KINDS, ContentBlock, extract_media
 from bot.handlers.admin.common import (
     BroadcastItemEdit,
     BroadcastNew,
@@ -20,6 +21,7 @@ from bot.handlers.admin.common import (
     capture_content,
     item_label,
     kb,
+    message_text,
     parse_buttons,
     preview,
     require_owner,
@@ -29,11 +31,16 @@ from bot.handlers.admin.common import (
     show,
 )
 
+from bot.recall import MAX_AGE_SECONDS, run_broadcast_recall
+
 log = logging.getLogger(__name__)
 router = Router(name="admin-broadcast")
 
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Moscow"))
 _tasks: set[asyncio.Task] = set()
+# Сообщения админа приходят параллельными апдейтами (особенно части альбома): без блокировки
+# чтение-правка-запись черновика теряет сообщения (то же решение, что в воронке — funnel._COLLECT_LOCK).
+_COLLECT_LOCK = asyncio.Lock()
 
 SEGMENTS = [
     ("all", "Все активные"),
@@ -74,7 +81,8 @@ STATUS_LABELS = {
     "queued": "запланирована",
     "running": "идёт",
     "done": "завершена",
-    "cancelled": "отменена",
+    "cancelled": "остановлена",
+    "recalled": "удалена у получателей",
 }
 
 
@@ -91,7 +99,7 @@ async def broadcast_screen(target, deps) -> None:
         )
         rows.append([(f"📨 #{row['id']} · {when} · {status}", f"a:bc:o:{row['id']}")])
     text = screen_text(
-        "📤 Рассылки", HINT, "<b>Последние</b> (нажми — открыть или удалить):\n" + ("\n".join(lines) if lines else "пока не было")
+        "📤 Рассылки", HINT, "<b>Последние</b> (нажми — открыть, остановить или удалить у получателей):\n" + ("\n".join(lines) if lines else "пока не было")
     )
     rows = [[("➕ Новая рассылка", "a:bc:new")]] + rows + [[("⬅️ Назад", "a:menu")]]
     await show(target, text, kb(rows))
@@ -102,26 +110,34 @@ async def broadcast_card(target, deps, broadcast_id: int, is_owner: bool) -> Non
     if row is None:
         await broadcast_screen(target, deps)
         return
+    status = row["status"]
     stats = await deps.broadcasts.stats(broadcast_id)
     messages = await deps.broadcasts.messages(broadcast_id)
     label = dict(SEGMENTS).get(row["segment"], row["segment"])
     text = (
-        f"📨 <b>Рассылка #{broadcast_id}</b> — {STATUS_LABELS.get(row['status'], row['status'])}\n\n"
+        f"📨 <b>Рассылка #{broadcast_id}</b> — {STATUS_LABELS.get(status, status)}\n\n"
         f"Сообщений: {len(messages)}\n"
         f"Получатели: {label} — {stats['total']}\n"
         f"🔔 Проверка подписки: {SUB_MODE_LABELS.get(row['sub_mode'], row['sub_mode'])}\n"
         f"{_stats_line(stats)}"
     )
-    if row["status"] == "draft":
+    if status == "draft":
         text += f"\n\n⏱ Время отправки: ~{_eta(stats['total'], deps)}"
+    if status in ("cancelled", "recalled") and stats.get("pending"):
+        text += f"\n⏹ Не успели отправить: {stats['pending']}"
     rows = [[("👁 Предпросмотр", f"a:bc:p:{broadcast_id}")]]
-    if row["status"] in ("draft", "queued"):
+    if status in ("draft", "queued"):
         rows.append([("🔔 Проверка подписки: сменить", f"a:bc:sub:{broadcast_id}")])
         rows.append([("🚀 Отправить сейчас", f"a:bc:go:{broadcast_id}")])
         rows.append([("🕓 Запланировать", f"a:bc:sch:{broadcast_id}")])
-    if is_owner and row["status"] != "running":
-        # Удаление из истории — необратимо и не нужно роли admin для повседневной работы.
-        rows.append([("🗑 Удалить", f"a:bc:del:{broadcast_id}")])
+    if status in ("queued", "running"):
+        rows.append([("⏹ Остановить рассылку", f"a:bc:x:{broadcast_id}")])
+    if status in ("done", "cancelled") and stats["sent"] > 0:
+        rows.append([("🧯 Удалить у получателей", f"a:bc:rc:{broadcast_id}")])
+    if is_owner and status != "running":
+        # Убрать запись из истории — необратимо и не нужно роли admin для повседневной работы.
+        # Сообщения у людей это не трогает — для них есть «Удалить у получателей».
+        rows.append([("🗑 Убрать из истории", f"a:bc:del:{broadcast_id}")])
     rows.append([("⬅️ К списку", "a:bc")])
     await show(target, text, kb(rows))
 
@@ -151,8 +167,9 @@ async def cb_delete_ask(call: CallbackQuery, deps) -> None:
     broadcast_id = int(call.data.split(":")[-1])
     await show(
         call,
-        f"🗑 Удалить рассылку #{broadcast_id}? Вернуть её будет нельзя.",
-        kb([[("🗑 Да, удалить", f"a:bc:delok:{broadcast_id}")], [("✖️ Нет", f"a:bc:o:{broadcast_id}")]]),
+        f"🗑 Убрать рассылку #{broadcast_id} из истории? Вернуть запись будет нельзя.\n\n"
+        "Сообщения у людей при этом останутся — чтобы удалить их, используйте «🧯 Удалить у получателей».",
+        kb([[("🗑 Да, убрать", f"a:bc:delok:{broadcast_id}")], [("✖️ Нет", f"a:bc:o:{broadcast_id}")]]),
     )
     await call.answer()
 
@@ -163,9 +180,9 @@ async def cb_delete_do(call: CallbackQuery, deps) -> None:
         return
     broadcast_id = int(call.data.split(":")[-1])
     if await deps.broadcasts.delete(broadcast_id):
-        await call.answer("Удалил")
+        await call.answer("Убрал из истории")
     else:
-        await call.answer("Идущую рассылку удалить нельзя", show_alert=True)
+        await call.answer("Идущую рассылку убрать нельзя", show_alert=True)
     await broadcast_screen(call, deps)
 
 
@@ -192,26 +209,89 @@ async def cb_new(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+def _album_part(message: Message) -> dict | None:
+    """Часть альбома: тип, file_id и номер исходного сообщения. None — это не файл, который Telegram собирает в альбом."""
+    if not message.media_group_id:
+        return None
+    found = extract_media(message)
+    if not found or found[0] not in ALBUM_KINDS:
+        return None
+    return {"kind": found[0], "file_id": found[1], "message_id": message.message_id}
+
+
+def _insert_ordered(messages: list[dict], item: dict) -> None:
+    """Вставить сообщение в черновик по порядку отправки админом, а не по порядку обработки апдейтов.
+
+    Обработчики идут параллельно, и более раннее сообщение может добраться до черновика позже более
+    позднего. Сдвигаем вставку левее только тех, у кого номер исходного сообщения известен и больше."""
+    pos = len(messages)
+    src = item.get("src_id")
+    if src is not None:
+        while pos > 0 and (messages[pos - 1].get("src_id") or 0) > src:
+            pos -= 1
+    messages.insert(pos, item)
+
+
+def _add_album_part(messages: list[dict], message: Message, part: dict) -> None:
+    group_id = message.media_group_id
+    existing = next((m for m in messages if m.get("group_id") == group_id), None)
+    if existing is None:
+        item = {
+            "text": None,
+            "media_kind": "album",
+            "file_id": None,
+            "buttons": [],
+            "album": [],
+            "group_id": group_id,
+            "src_id": part["message_id"],
+        }
+    else:
+        item = existing
+        messages.remove(existing)
+    if all(p["message_id"] != part["message_id"] for p in item["album"]):
+        item["album"].append(part)
+        item["album"].sort(key=lambda p: p["message_id"])
+    item["src_id"] = item["album"][0]["message_id"]
+    caption = message_text(message)
+    if caption and not item.get("text"):
+        item["text"] = caption
+    _insert_ordered(messages, item)
+
+
 @router.message(BroadcastNew.collecting)
 async def on_collect(message: Message, state: FSMContext, deps) -> None:
     """Копим сообщения для рассылки. Счётчик правим в одном и том же сообщении,
-    чтобы при нескольких подряд присланных постах чат не зарастал одинаковыми уведомлениями."""
-    text, media_id = await capture_content(deps, message, "broadcast")
-    if not text and not media_id:
-        await message.answer(
-            "Такой тип сообщения пока не поддерживается для рассылки. Пришли текст, фото, "
-            "видео, кружок, файл, аудио, голосовое, гифку или стикер."
-        )
-        return
-    media_kind = file_id = None
-    if media_id:
-        media_row = await deps.media.get(media_id)
-        if media_row:
-            media_kind, file_id = media_row["kind"], media_row["file_id"]
-    data = await state.get_data()
-    messages = data.get("messages", [])
-    messages.append({"text": text, "media_kind": media_kind, "file_id": file_id, "buttons": []})
-    await state.update_data(messages=messages)
+    чтобы при нескольких подряд присланных постах чат не зарастал одинаковыми уведомлениями.
+
+    Альбом приходит от Telegram отдельным апдейтом на каждый файл — склеиваем их обратно в одно
+    сообщение рассылки, иначе людям файлы уйдут по одному."""
+    part = _album_part(message)
+    item = None
+    if part is None:
+        text, media_id = await capture_content(deps, message, "broadcast")
+        if not text and not media_id:
+            await message.answer(
+                "Такой тип сообщения пока не поддерживается для рассылки. Пришли текст, фото, "
+                "видео, кружок, файл, аудио, голосовое, гифку или стикер."
+            )
+            return
+        media_kind = file_id = None
+        if media_id:
+            media_row = await deps.media.get(media_id)
+            if media_row:
+                media_kind, file_id = media_row["kind"], media_row["file_id"]
+        item = {
+            "text": text, "media_kind": media_kind, "file_id": file_id, "buttons": [],
+            "src_id": message.message_id,
+        }
+    async with _COLLECT_LOCK:
+        data = await state.get_data()
+        messages = data.get("messages", [])
+        if part is not None:
+            _add_album_part(messages, message, part)
+        else:
+            _insert_ordered(messages, item)
+        await state.update_data(messages=messages)
     text_out = f"📤 <b>Сбор рассылки</b>\n\nДобавлено сообщений: {len(messages)}\n\nШли ещё или жми «✅ Готово»."
     markup = kb([[("✅ Готово", "a:bc:done")], [("✖️ Отмена", "a:bc")]])
     chat_id, message_id = data.get("_menu_chat_id"), data.get("_menu_message_id")
@@ -230,6 +310,8 @@ async def broadcast_draft_screen(target, state: FSMContext) -> None:
     for idx, item in enumerate(messages):
         n_buttons = len(item.get("buttons") or [])
         btn_hint = f" · 🔘{n_buttons}" if n_buttons else ""
+        if item.get("album"):
+            btn_hint = f" · {len(item['album'])} шт." + btn_hint
         lines.append(f"{idx + 1}. {item_label(item.get('text'), item.get('media_kind'))}{btn_hint}")
         rows.append(
             [
@@ -239,10 +321,17 @@ async def broadcast_draft_screen(target, state: FSMContext) -> None:
         )
     rows.append([("➕ Добавить ещё", "a:bc:more")])
     if messages:
+        rows.append([("👁 Предпросмотр всей рассылки", "a:bc:dpall")])
         rows.append([("▶️ Дальше — выбрать получателей", "a:bc:tosend")])
     rows.append([("✖️ Отмена", "a:bc")])
     body = "\n".join(lines) if lines else "Сообщений пока нет — пришли хотя бы одно."
     await show(target, screen_text("📤 Сбор рассылки", "Добавьте сообщения, потом «Дальше».", body), kb(rows))
+
+
+def _media_desc(item: dict) -> str:
+    if item.get("album"):
+        return f"альбом, файлов: {len(item['album'])}"
+    return item.get("media_kind") or "нет"
 
 
 async def broadcast_item_screen(target, state: FSMContext, idx: int) -> None:
@@ -254,7 +343,7 @@ async def broadcast_item_screen(target, state: FSMContext, idx: int) -> None:
     item = messages[idx]
     text = (
         f"📤 <b>Сообщение #{idx + 1}</b>\n\n"
-        f"🎬 Медиа: {item.get('media_kind') or 'нет'}\n"
+        f"🎬 Медиа: {_media_desc(item)}\n"
         f"🔘 Кнопки: {', '.join(b['text'] for b in item.get('buttons') or []) or 'нет'}\n\n"
         f"Текст:\n{safe_excerpt(item.get('text')) or '<i>без текста</i>'}"
     )
@@ -319,6 +408,21 @@ async def cb_draft_preview(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer("Это увидят люди")
 
 
+@router.callback_query(F.data == "a:bc:dpall")
+async def cb_draft_preview_all(call: CallbackQuery, state: FSMContext) -> None:
+    """Вся рассылка целиком, в том порядке и виде, в каком её получат люди."""
+    messages = (await state.get_data()).get("messages", [])
+    if not messages:
+        await call.answer("Сначала пришли хотя бы одно сообщение", show_alert=True)
+        return
+    await call.answer("Сейчас пришлю всё как увидят люди")
+    await send_preview(call, [_block_from_item(item) for item in messages])
+    await call.message.answer(
+        f"👆 Так рассылка выглядит у людей: сообщений — {len(messages)}. Всё верно — жми «▶️ Дальше», "
+        "нет — поправь или удали сообщения в списке выше.",
+    )
+
+
 @router.callback_query(F.data.startswith("a:bc:ddel:"))
 async def cb_draft_delete(call: CallbackQuery, state: FSMContext) -> None:
     idx = int(call.data.split(":")[-1])
@@ -357,6 +461,10 @@ async def _move_draft_item(state: FSMContext, idx: int, direction: int) -> None:
 @router.callback_query(F.data.startswith("a:bc:dedit:"))
 async def cb_draft_edit(call: CallbackQuery, state: FSMContext) -> None:
     idx = int(call.data.split(":")[-1])
+    messages = (await state.get_data()).get("messages", [])
+    if 0 <= idx < len(messages) and messages[idx].get("album"):
+        await call.answer("Альбом нельзя править по частям — удалите его (🗑) и пришлите альбом заново.", show_alert=True)
+        return
     await state.update_data(edit_idx=idx)
     await state.set_state(BroadcastItemEdit.waiting_content)
     await show(
@@ -374,6 +482,12 @@ async def on_draft_edit_content(message: Message, state: FSMContext, deps) -> No
     messages = data.get("messages", [])
     if idx is None or not (0 <= idx < len(messages)):
         await state.set_state(BroadcastNew.collecting)
+        return
+    if message.media_group_id:
+        await message.answer(
+            "Альбом одним сообщением не заменить. Пришли один файл или текст, а альбом добавь "
+            "отдельно: «➕ Добавить ещё»."
+        )
         return
     text, media_id = await capture_content(deps, message, "broadcast")
     if not text and not media_id:
@@ -398,6 +512,10 @@ async def on_draft_edit_content(message: Message, state: FSMContext, deps) -> No
 @router.callback_query(F.data.startswith("a:bc:dbtn:"))
 async def cb_draft_buttons(call: CallbackQuery, state: FSMContext) -> None:
     idx = int(call.data.split(":")[-1])
+    messages = (await state.get_data()).get("messages", [])
+    if 0 <= idx < len(messages) and messages[idx].get("album"):
+        await call.answer("У альбома кнопки не поддерживает сам Telegram. Добавьте кнопку отдельным сообщением после альбома.", show_alert=True)
+        return
     await state.update_data(edit_idx=idx)
     await state.set_state(BroadcastItemEdit.waiting_buttons)
     await show(
@@ -459,6 +577,7 @@ def _block_from_item(item: dict) -> ContentBlock:
         media_kind=item.get("media_kind"),
         file_id=item.get("file_id"),
         buttons=item.get("buttons") or [],
+        album=item.get("album") or None,
     )
 
 
@@ -487,16 +606,115 @@ async def cb_preview(call: CallbackQuery, deps) -> None:
 
 @router.callback_query(F.data.startswith("a:bc:x:"))
 async def cb_cancel(call: CallbackQuery, deps) -> None:
+    """⏹ Остановить: идущая рассылка перестаёт слать со следующего получателя, запланированная — не запустится."""
     broadcast_id = int(call.data.split(":")[-1])
+    row = await deps.broadcasts.get(broadcast_id)
+    if row is None or row["status"] not in ("queued", "running"):
+        await call.answer("Эту рассылку уже нечего останавливать", show_alert=True)
+        return
     await deps.broadcasts.cancel(broadcast_id)
-    await call.answer("Отменил")
-    await broadcast_screen(call, deps)
+    await call.answer("Останавливаю — новым людям больше не отправляю")
+    await broadcast_card(call, deps, broadcast_id, deps.config.is_admin(call.from_user.id))
+
+
+async def _wait_runner(broadcast_id: int, timeout: float = 30.0) -> None:
+    """Дождаться, пока остановленный прогон допошлёт текущему получателю и выйдет — иначе его
+    последние сообщения могли бы появиться уже после удаления."""
+    for task in list(_tasks):
+        if task.get_name() == f"broadcast-{broadcast_id}":
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout)
+            except Exception:  # noqa: BLE001 — не дождались: удаляем то, что уже в журнале
+                pass
+
+
+@router.callback_query(F.data.startswith("a:bc:rc:"))
+async def cb_recall_ask(call: CallbackQuery, deps) -> None:
+    broadcast_id = int(call.data.split(":")[-1])
+    row = await deps.broadcasts.get(broadcast_id)
+    if row is None:
+        await broadcast_screen(call, deps)
+        await call.answer()
+        return
+    if row["status"] == "running":
+        await call.answer("Рассылка ещё идёт — сначала нажмите «⏹ Остановить»", show_alert=True)
+        return
+    logged = await deps.sent_log.for_ref("broadcast", broadcast_id)
+    people = len({r["user_id"] for r in logged})
+    if not logged:
+        await show(
+            call,
+            f"🧯 <b>Рассылка #{broadcast_id}</b>\n\nВ журнале нет отправленных сообщений этой рассылки — удалять "
+            "нечего. Так бывает, если она отправлена до появления журнала.",
+            kb([[("⬅️ К рассылке", f"a:bc:o:{broadcast_id}")]]),
+        )
+        await call.answer()
+        return
+    fresh = [r for r in logged if r["sent_at"] >= int(time.time()) - MAX_AGE_SECONDS]
+    old_note = (
+        f"\n\nСтарше 48 часов (Telegram не даёт их удалить): {len(logged) - len(fresh)} сообщ."
+        if len(fresh) < len(logged)
+        else ""
+    )
+    await show(
+        call,
+        f"🧯 <b>Удалить рассылку #{broadcast_id} у получателей?</b>\n\n"
+        f"Сообщения пропадут из чатов у людей: {people} чел., {len(logged)} сообщ.\n"
+        "Вернуть их будет нельзя. Другие рассылки и посты прогрева не затрагиваются."
+        f"{old_note}",
+        kb([[("🧯 Да, удалить у всех", f"a:bc:rcok:{broadcast_id}")], [("✖️ Нет", f"a:bc:o:{broadcast_id}")]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:rcok:"))
+async def cb_recall_do(call: CallbackQuery, deps) -> None:
+    broadcast_id = int(call.data.split(":")[-1])
+    row = await deps.broadcasts.get(broadcast_id)
+    if row is None:
+        await broadcast_screen(call, deps)
+        await call.answer()
+        return
+    if row["status"] == "running":
+        await call.answer("Рассылка ещё идёт — сначала нажмите «⏹ Остановить»", show_alert=True)
+        return
+    await call.answer("Удаляю…")
+    await show(call, "⏳ Удаляю сообщения у получателей, это может занять несколько минут…")
+    await _wait_runner(broadcast_id)
+    result = await run_broadcast_recall(call.bot, deps, broadcast_id)
+    lines = [f"Удалено у людей: {result['users']} ({result['messages']} сообщ.)"]
+    if result["blocked"]:
+        lines.append(f"Заблокировали бота: {result['blocked']}")
+    if result["too_old"]:
+        lines.append(f"Старше 48 часов, удалить нельзя: {result['too_old']} сообщ.")
+    if result["failed"]:
+        lines.append(f"Не вышло: {result['failed']} — нажмите «Удалить у получателей» ещё раз")
+    if not result["messages"] and not result["failed"] and not result["blocked"] and not result["too_old"]:
+        lines = ["Удалять было нечего — в журнале нет сообщений этой рассылки."]
+    await show(
+        call,
+        screen_text(f"🧯 Рассылка #{broadcast_id}", "Удаление у получателей выполнено.", "\n".join(lines)),
+        kb([[("📨 К рассылке", f"a:bc:o:{broadcast_id}")], [("⬅️ К списку", "a:bc")]]),
+    )
+
+
+def _finished_keyboard(broadcast_id: int, can_recall: bool):
+    rows = []
+    if can_recall:
+        rows.append([("🧯 Удалить у получателей", f"a:bc:rc:{broadcast_id}")])
+    rows.append([("📨 Карточка рассылки", f"a:bc:o:{broadcast_id}")])
+    return kb(rows)
 
 
 @router.callback_query(F.data.startswith("a:bc:go:"))
 async def cb_go(call: CallbackQuery, deps) -> None:
     broadcast_id = int(call.data.split(":")[-1])
-    status_message = await call.message.answer("🚀 Отправляю…")
+    if not await deps.broadcasts.claim_run(broadcast_id):
+        # уже идёт, завершена или остановлена — второй запуск разослал бы всё людям повторно
+        await call.answer("Эта рассылка уже запущена или завершена", show_alert=True)
+        return
+    stop_markup = kb([[("⏹ Остановить", f"a:bc:x:{broadcast_id}")]])
+    status_message = await call.message.answer("🚀 Отправляю…", reply_markup=stop_markup)
     await call.answer()
 
     async def progress(stats: dict[str, int]) -> None:
@@ -505,23 +723,30 @@ async def cb_go(call: CallbackQuery, deps) -> None:
                 f"🚀 Отправляю…\n\n"
                 f"Готово: {stats['sent']} из {stats['total']}\n"
                 f"Заблокировали: {stats['blocked']}\n"
-                f"Ошибок: {stats['failed']}"
+                f"Ошибок: {stats['failed']}",
+                reply_markup=stop_markup,
             )
         except Exception:  # noqa: BLE001 — Telegram не даёт редактировать слишком часто
             pass
 
     async def runner() -> None:
         stats = await deps.engine.run(broadcast_id, progress=progress)
+        stopped = await deps.broadcasts.status(broadcast_id) in ("cancelled", "recalled")
+        title = f"⏹ Рассылка #{broadcast_id} остановлена" if stopped else f"✅ Рассылка #{broadcast_id} завершена"
+        text = (
+            f"{title}\n\n"
+            f"Доставлено: {stats['sent']}\n"
+            f"Заблокировали бота: {stats['blocked']}\n"
+            f"Ошибок: {stats['failed']}\n"
+            f"Всего в базе: {stats['total']}"
+        )
+        if stopped and stats.get("pending"):
+            text += f"\nНе успели отправить: {stats['pending']}"
+        markup = _finished_keyboard(broadcast_id, stats["sent"] > 0)
         try:
-            await status_message.edit_text(
-                f"✅ Рассылка #{broadcast_id} завершена\n\n"
-                f"Доставлено: {stats['sent']}\n"
-                f"Заблокировали бота: {stats['blocked']}\n"
-                f"Ошибок: {stats['failed']}\n"
-                f"Всего в базе: {stats['total']}"
-            )
+            await status_message.edit_text(text, reply_markup=markup)
         except Exception:  # noqa: BLE001
-            await call.message.answer(f"✅ Рассылка #{broadcast_id} завершена: {stats}")
+            await call.message.answer(text, reply_markup=markup)
 
     task = asyncio.create_task(runner(), name=f"broadcast-{broadcast_id}")
     _tasks.add(task)
