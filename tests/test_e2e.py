@@ -73,6 +73,8 @@ class MockSession(BaseSession):
             )
         if name == "CopyMessage":
             return MessageId(message_id=1)
+        if name == "CopyMessages":
+            return [MessageId(message_id=index + 1) for index, _ in enumerate(method.message_ids)]
         if name == "GetChat":
             chat_id = method.chat_id
             resolved_id = chat_id if isinstance(chat_id, int) else 777

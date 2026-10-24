@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from bot.content import ContentBlock
+from bot.content import ContentBlock, source_of
 from bot.preprod import allowed_user_ids
 from bot.reminder import send_reminder
 from bot.sender import BLOCKED, SENT, safe_send, send_block
@@ -145,12 +145,15 @@ class BroadcastEngine:
                 # с тем же запасным вариантом для отклонённых кружков.
                 if user is None:
                     user = await self.users.get(user_id)
+                source_chat, source_ids = source_of(msg)
                 block = ContentBlock(
                     text=msg.get("text"),
                     media_kind=msg.get("media_kind"),
                     file_id=msg.get("file_id"),
                     buttons=msg.get("buttons") or [],
                     album=msg.get("album") or None,
+                    source_chat=source_chat,
+                    source_ids=source_ids,
                 )
                 outcome = await send_block(
                     block, self.bot, user_id, user=user, users=self.users, limiter=self.limiter

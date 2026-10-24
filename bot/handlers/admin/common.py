@@ -20,6 +20,7 @@ from aiogram.types import (
     TelegramObject,
 )
 
+from bot import content
 from bot.content import extract_media
 from bot.sender import send_block
 
@@ -243,10 +244,31 @@ EMOJI_LOST_NOTE = (
     "⚠️ Кастомные эмодзи не показались. Telegram разрешает их в сообщениях бота, только если у владельца бота "
     "(аккаунта, который создал бота в @BotFather) есть Telegram Premium. Пока его нет, люди увидят обычные эмодзи."
 )
-CAPTION_SPLIT_NOTE = (
-    "ℹ️ Подпись к медиа длиннее лимита Telegram, поэтому текст ушёл вторым сообщением. "
-    "Чтобы был один пост, сократите текст до 1024 символов."
-)
+
+
+def caption_split_note(length: int, copy_failed: bool = False) -> str:
+    """Почему текст ушёл вторым сообщением: сколько знаков в подписи и какой лимит у Telegram."""
+    limit = content.get_caption_limit()
+    if length > content.PREMIUM_CAPTION_LIMIT:
+        why = (
+            f"В подписи {length} знаков — больше {content.PREMIUM_CAPTION_LIMIT}, это предел Telegram "
+            f"даже с Premium. Сократите текст до {content.PREMIUM_CAPTION_LIMIT} знаков."
+        )
+    else:
+        why = (
+            f"В подписи {length} знаков, а этот бот может отправить в подписи только {limit}: "
+            f"лимит {content.PREMIUM_CAPTION_LIMIT} Telegram даёт, если у владельца бота "
+            f"(создавшего его в @BotFather) есть Premium. Сократите текст до {limit} знаков."
+        )
+    tail = " Отправка копией вашего исходного сообщения тоже не прошла: Telegram отказал." if copy_failed else ""
+    return f"ℹ️ Подпись не поместилась в одно сообщение, текст ушёл вторым. {why}{tail}"
+
+
+def caption_copied_note(length: int) -> str:
+    return (
+        f"✅ Подпись {length} знаков ушла одним сообщением: бот отправил копию вашего исходного поста, "
+        "поэтому текст и оформление точно такие, как вы прислали."
+    )
 
 
 def preview_notes(outcomes) -> str | None:
@@ -254,8 +276,14 @@ def preview_notes(outcomes) -> str | None:
     notes = []
     if any(getattr(o, "custom_emoji_lost", False) for o in outcomes):
         notes.append(EMOJI_LOST_NOTE)
-    if any(getattr(o, "caption_split", False) for o in outcomes):
-        notes.append(CAPTION_SPLIT_NOTE)
+    for outcome in outcomes:
+        if getattr(outcome, "caption_split", False):
+            notes.append(caption_split_note(outcome.caption_len, getattr(outcome, "copy_failed", False)))
+            break
+    for outcome in outcomes:
+        if getattr(outcome, "copied", False):
+            notes.append(caption_copied_note(outcome.caption_len))
+            break
     return "\n\n".join(notes) or None
 
 

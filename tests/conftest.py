@@ -57,4 +57,5 @@ def reset_content_state():
 
     content.set_caption_limit(content.PREMIUM_CAPTION_LIMIT)
     content.set_custom_emoji_status(None)
+    content.set_copy_status(None)
     yield

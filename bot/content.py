@@ -46,6 +46,18 @@ def set_caption_limit(value: int) -> None:
     _caption_limit = int(value)
 
 
+_copy_long_ok: bool | None = None   # None — не знаем; False — Telegram отказал копировать пост с такой подписью
+
+
+def get_copy_status() -> bool | None:
+    return _copy_long_ok
+
+
+def set_copy_status(value: bool | None) -> None:
+    global _copy_long_ok
+    _copy_long_ok = value
+
+
 def visible_len(text: str | None) -> int:
     """Длина видимого текста: без HTML-тегов и с раскрытыми сущностями. Именно её считает Telegram
     для лимита подписи; сама HTML-строка длиннее (каждое кастомное эмодзи — ещё ~50 служебных символов)."""
@@ -64,6 +76,10 @@ class ContentBlock:
     # Альбом: [{"kind": "photo|video|document|audio", "file_id": ...}, ...] — уходит одним сообщением-группой.
     # Telegram не даёт вешать кнопки на альбом, поэтому buttons для него игнорируются.
     album: list[dict] | None = None
+    # Где лежит исходное сообщение админа (чат и номера сообщений; у альбома их несколько). Нужно для
+    # длинной подписи: Telegram не даёт боту отправить её сам, но копия исходного сообщения уходит как есть.
+    source_chat: int | None = None
+    source_ids: list[int] | None = None
 
     @classmethod
     def from_rows(cls, row: Any, media_row: Any = None) -> "ContentBlock":
@@ -130,6 +146,27 @@ class ContentBlock:
         kb = None if self.render(user) else self.keyboard()
         return _bind(send, bot, chat_id, self.file_id, None, kb)
 
+    def can_copy(self, user: Any = None) -> bool:
+        """Можно отправить копией исходного сообщения: оно известно, а текст не требует подстановок ({name})."""
+        if not (self.source_chat and self.source_ids):
+            return False
+        text = self.text or ""
+        return "{name}" not in text and "{username}" not in text
+
+    def copy_factory(self, bot: Bot, chat_id: int, user: Any = None) -> Factory | None:
+        """Копия исходного сообщения админа: текст, форматирование и эмодзи ровно такие, как он прислал.
+        Кнопки добавляются (у альбома их нет — Telegram не позволяет)."""
+        if not self.can_copy(user):
+            return None
+        source_chat, ids = self.source_chat, list(self.source_ids)
+
+        async def call():
+            if len(ids) > 1 or self.album:
+                return await bot.copy_messages(chat_id, source_chat, ids)
+            return await bot.copy_message(chat_id, source_chat, ids[0], reply_markup=self.keyboard())
+
+        return call
+
     def caption_overflow(self, user: Any = None) -> bool:
         """Текст с медиа не помещается в подпись (по известному сейчас лимиту) и уйдёт вторым сообщением."""
         text = self.render(user)
@@ -166,6 +203,18 @@ class ContentBlock:
         elif text:
             out.append(_bind(_send_text, bot, chat_id, None, text, kb))
         return out
+
+
+def source_of(item: dict) -> tuple[int | None, list[int] | None]:
+    """Откуда копировать пункт черновика рассылки: (чат админа, номера его исходных сообщений).
+    У пункта, который админ исправил, ссылки нет — копия показала бы старое содержимое."""
+    chat = item.get("src_chat")
+    if not chat:
+        return None, None
+    if item.get("album"):
+        return chat, sorted(part["message_id"] for part in item["album"])
+    src = item.get("src_id")
+    return (chat, [src]) if src else (None, None)
 
 
 def _bind(func, bot, chat_id, file_id, caption, kb) -> Factory:

@@ -13,7 +13,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.content import ALBUM_KINDS, ContentBlock, extract_media
+from bot.content import ALBUM_KINDS, ContentBlock, extract_media, source_of
 from bot.handlers.admin.common import (
     BroadcastItemEdit,
     BroadcastNew,
@@ -244,6 +244,7 @@ def _add_album_part(messages: list[dict], message: Message, part: dict) -> None:
             "album": [],
             "group_id": group_id,
             "src_id": part["message_id"],
+            "src_chat": message.chat.id,
         }
     else:
         item = existing
@@ -282,7 +283,7 @@ async def on_collect(message: Message, state: FSMContext, deps) -> None:
                 media_kind, file_id = media_row["kind"], media_row["file_id"]
         item = {
             "text": text, "media_kind": media_kind, "file_id": file_id, "buttons": [],
-            "src_id": message.message_id,
+            "src_id": message.message_id, "src_chat": message.chat.id,
         }
     async with _COLLECT_LOCK:
         data = await state.get_data()
@@ -572,12 +573,15 @@ async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
 
 
 def _block_from_item(item: dict) -> ContentBlock:
+    source_chat, source_ids = source_of(item)
     return ContentBlock(
         text=item.get("text"),
         media_kind=item.get("media_kind"),
         file_id=item.get("file_id"),
         buttons=item.get("buttons") or [],
         album=item.get("album") or None,
+        source_chat=source_chat,
+        source_ids=source_ids,
     )
 
 

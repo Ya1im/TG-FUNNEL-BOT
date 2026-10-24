@@ -34,6 +34,9 @@ class SendOutcome:
     message_ids: list[int] = field(default_factory=list)  # номера отправленных сообщений (для отзыва)
     caption_split: bool = False       # подпись не влезла в лимит Telegram — текст ушёл вторым сообщением
     custom_emoji_lost: bool = False   # кастомные эмодзи в тексте, но Telegram отдал сообщение без них
+    caption_len: int = 0              # видимая длина текста (для пояснения админу)
+    copied: bool = False              # длинная подпись ушла одним постом — копией исходного сообщения админа
+    copy_failed: bool = False         # копию пробовали, но Telegram отказал — текст ушёл вторым сообщением
 
     @property
     def ok(self) -> bool:
@@ -120,13 +123,28 @@ async def send_block(
     Кружок, отклонённый Telegram из-за приватности получателя
     (VOICE_MESSAGES_FORBIDDEN — общая настройка на голосовые и видеосообщения),
     пробуем донести запасным способом — обычным видео (см. ContentBlock.fallback_factory)."""
+    copy_failed = False
+    if block.caption_overflow(user) and _copy_allowed(block, user):
+        # подпись заведомо не влезает: сразу шлём копию исходного сообщения — получится один пост
+        outcome = await _send_copy(block, bot, chat_id, user=user, users=users, limiter=limiter)
+        if outcome.ok or outcome.status == BLOCKED:
+            return outcome
+        copy_failed = _copy_refused(outcome, block, user)
     outcome = await _send_block_once(block, bot, chat_id, user=user, users=users, limiter=limiter)
     if not outcome.ok and not outcome.message_ids and block.long_caption(user) and _TOO_LONG_RE.search(outcome.error or ""):
-        # Telegram не принял подпись сверх 1024 — запоминаем и шлём привычным способом (медиа + текст)
-        log.info("Подпись длиннее 1024 не принята — дальше делю длинные подписи на два сообщения")
+        # Telegram не принял подпись сверх 1024 — запоминаем; сначала пробуем копию, потом привычное деление
+        log.info("Подпись длиннее 1024 не принята — дальше длинные подписи шлю копией или делю на два сообщения")
         content.set_caption_limit(content.CAPTION_LIMIT)
+        if _copy_allowed(block, user):
+            copied = await _send_copy(block, bot, chat_id, user=user, users=users, limiter=limiter)
+            if copied.ok or copied.status == BLOCKED:
+                return copied
+            copy_failed = _copy_refused(copied, block, user)
         outcome = await _send_block_once(block, bot, chat_id, user=user, users=users, limiter=limiter)
     outcome.caption_split = block.caption_overflow(user)
+    outcome.copy_failed = copy_failed and outcome.caption_split
+    if outcome.caption_split:
+        outcome.caption_len = content.visible_len(block.render(user))
     if outcome.ok:
         outcome.custom_emoji_lost = _custom_emoji_lost(block, user, outcome.result)
         if _custom_emoji_checked(block, outcome.result):
@@ -136,6 +154,40 @@ async def send_block(
 
 
 _TOO_LONG_RE = re.compile(r"too[ _]long", re.IGNORECASE)
+
+
+def _copy_allowed(block, user) -> bool:
+    """Копию пробуем, пока Telegram не отказал в ней из-за длины подписи (тогда отказ запомнен до перезапуска)."""
+    return block.can_copy(user) and content.get_copy_status() is not False
+
+
+def _copy_refused(outcome, block, user) -> bool:
+    """Копия не прошла. Если из-за длины подписи (в пределах 2048) — запоминаем до перезапуска, чтобы не тратить
+    лишний запрос на каждого получателя. Подпись длиннее 2048 не принимает никто — это не повод отключать копии."""
+    length = content.visible_len(block.render(user))
+    if _TOO_LONG_RE.search(outcome.error or "") and length <= content.PREMIUM_CAPTION_LIMIT:
+        content.set_copy_status(False)
+    return True
+
+
+async def _send_copy(block, bot, chat_id, *, user=None, users=None, limiter=None) -> SendOutcome:
+    outcome = await safe_send(block.copy_factory(bot, chat_id, user), chat_id=chat_id, users=users, limiter=limiter)
+    outcome.message_ids = _message_ids(outcome)
+    if outcome.ok:
+        outcome.copied = True
+        outcome.caption_len = content.visible_len(block.render(user))
+        content.set_copy_status(True)
+    return outcome
+
+
+def _message_ids(outcome) -> list[int]:
+    """Номера отправленных сообщений из ответа Telegram (одно сообщение или список — альбом, пачка копий)."""
+    if not outcome.ok:
+        return []
+    if isinstance(outcome.result, list):
+        return [m.message_id for m in outcome.result if isinstance(getattr(m, "message_id", None), int)]
+    message_id = getattr(outcome.result, "message_id", None)
+    return [message_id] if isinstance(message_id, int) else []
 
 
 def _custom_emoji_checked(block, result) -> bool:
@@ -167,13 +219,8 @@ async def _send_block_once(block, bot, chat_id, *, user=None, users=None, limite
                     chat_id,
                 )
                 outcome = await safe_send(fallback, chat_id=chat_id, users=users, limiter=limiter)
-        if outcome.ok and isinstance(outcome.result, list):
-            # альбом: Telegram отвечает списком сообщений — номера нужны все, иначе рассылку не отозвать
-            ids.extend(m.message_id for m in outcome.result if isinstance(getattr(m, "message_id", None), int))
-        else:
-            message_id = getattr(outcome.result, "message_id", None) if outcome.ok else None
-            if isinstance(message_id, int):
-                ids.append(message_id)
+        # альбом: Telegram отвечает списком сообщений — номера нужны все, иначе рассылку не отозвать
+        ids.extend(_message_ids(outcome))
         if not outcome.ok:
             outcome.message_ids = ids
             return outcome
