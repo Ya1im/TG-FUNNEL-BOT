@@ -7,12 +7,27 @@ import time
 
 from bot.db import Database
 
+# Воронка закончена, когда урок выдан и у человека не осталось ожидающих включённых шагов прогрева.
+# Пропущенные шаги (не подписан, «уже получил более поздний») и шаги со сбоем её не держат.
+_PENDING = (
+    "EXISTS (SELECT 1 FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+    "WHERE us.user_id = users.tg_id AND us.status = 'pending' AND fs.enabled = 1)"
+)
+# Этап человека — шаг, которого он ждёт: первый ожидающий включённый шаг по порядку воронки.
+_HEAD_STEP = (
+    "(SELECT us.step_id FROM user_steps us JOIN funnel_steps fs ON fs.id = us.step_id "
+    "WHERE us.user_id = users.tg_id AND us.status = 'pending' AND fs.enabled = 1 "
+    "ORDER BY fs.position, fs.id LIMIT 1)"
+)
+
 SEGMENTS = {
     "all": "status = 'active'",
     "subscribed": "status = 'active' AND is_subscribed = 1",
     "not_subscribed": "status = 'active' AND is_subscribed = 0",
     "got_material": "status = 'active' AND material_sent_at IS NOT NULL",
     "no_material": "status = 'active' AND material_sent_at IS NULL",
+    "funnel_done": f"status = 'active' AND material_sent_at IS NOT NULL AND NOT {_PENDING}",
+    "funnel_running": f"status = 'active' AND material_sent_at IS NOT NULL AND {_PENDING}",
     "blocked": "status = 'blocked'",
 }
 
@@ -179,6 +194,17 @@ class UsersRepo:
                 f"SELECT tg_id FROM users WHERE status = 'active' AND source = ? AND {excl_sql}",
                 (value, *excl_params),
             )
+        elif segment == "step":
+            # «ждут пост N»: value — id шага воронки
+            try:
+                step_id = int(value)
+            except (TypeError, ValueError):
+                return []
+            rows = await self.db.fetchall(
+                "SELECT tg_id FROM users WHERE status = 'active' AND material_sent_at IS NOT NULL "
+                f"AND {_HEAD_STEP} = ? AND {excl_sql}",
+                (step_id, *excl_params),
+            )
         else:
             where = SEGMENTS.get(segment, SEGMENTS["all"])
             rows = await self.db.fetchall(
@@ -188,6 +214,38 @@ class UsersRepo:
 
     async def segment_count(self, segment: str, value: str | None = None) -> int:
         return len(await self.segment_ids(segment, value))
+
+    async def funnel_stages(self) -> dict:
+        """Где сейчас активные люди: до выдачи урока, в прогреве, закончили воронку; и на каком посте
+        ждущие. Админы-тестеры не считаются. `stages` — все включённые шаги по порядку (число людей может быть 0)."""
+        excl_sql, excl_params = self._admin_exclusion()
+        row = await self.db.fetchone(
+            "SELECT COALESCE(SUM(material_sent_at IS NULL), 0) AS no_material,"
+            f" COALESCE(SUM(material_sent_at IS NOT NULL AND {_PENDING}), 0) AS running,"
+            f" COALESCE(SUM(material_sent_at IS NOT NULL AND NOT {_PENDING}), 0) AS done "
+            f"FROM users WHERE status = 'active' AND {excl_sql}",
+            excl_params,
+        )
+        heads = await self.db.fetchall(
+            f"SELECT head, COUNT(*) AS cnt FROM (SELECT {_HEAD_STEP} AS head FROM users "
+            f"WHERE status = 'active' AND material_sent_at IS NOT NULL AND {excl_sql}) "
+            "WHERE head IS NOT NULL GROUP BY head",
+            excl_params,
+        )
+        waiting = {r["head"]: r["cnt"] for r in heads}
+        steps = await self.db.fetchall(
+            "SELECT id, delay_seconds FROM funnel_steps WHERE enabled = 1 ORDER BY position, id"
+        )
+        return {
+            "no_material": int(row["no_material"]),
+            "running": int(row["running"]),
+            "done": int(row["done"]),
+            "stages": [
+                {"step_id": s["id"], "number": index, "delay_seconds": s["delay_seconds"],
+                 "count": int(waiting.get(s["id"], 0))}
+                for index, s in enumerate(steps, start=1)
+            ],
+        }
 
     async def stats(self) -> dict[str, int]:
         excl_sql, excl_params = self._admin_exclusion()

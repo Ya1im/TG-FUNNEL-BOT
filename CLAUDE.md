@@ -67,7 +67,7 @@ bot/stats_export.py  пересборка .xlsx-таблицы статисти�
 ## Команды
 
 ```bash
-./.venv-agent/bin/python -m pytest -q     # 473 теста (24.10.2026), окружение Linux-сессии
+./.venv-agent/bin/python -m pytest -q     # 488 тестов (28.10.2026), окружение Linux-сессии
 make install && make test                  # если запускаешь с macOS (свой .venv)
 ```
 
@@ -502,6 +502,20 @@ Telegram молча отбрасывает сущность с несущест�
   «👁 Предпросмотр всей рассылки» (пояснение «✅ … одним сообщением» или «ℹ️ … текст ушёл вторым»).
 - Тесты: `tests/test_broadcast_album.py`, `tests/test_broadcast_controls.py`; `MockSession` в `test_e2e.py` отвечает на
   `SendMediaGroup` списком сообщений.
+
+## Этапы воронки: «закончили» и «в процессе» (28.10.2026)
+
+Нужно, чтобы слать рассылки только тем, у кого воронка закончилась. Определения (`bot/repo/users.py`, SQL-константы `_PENDING`,
+`_HEAD_STEP`), ничего не хранится в базе — считается на лету:
+- **закончил воронку** (`segment funnel_done`): активный, `material_sent_at` задан и нет ожидающих (`pending`) ВКЛЮЧЁННЫХ шагов.
+  `skipped` и `failed` не держат; выключенный шаг не держит; воронка без шагов = закончил сразу после урока;
+- **в процессе** (`funnel_running`): урок выдан, есть ожидающий включённый шаг; **этап** = первый такой шаг по порядку воронки
+  («ждёт пост N», segment `step`, `segment_value` = id шага, в карточке рассылки номер берётся из текущей воронки);
+- до выдачи урока — прежний `no_material`.
+`UsersRepo.funnel_stages()` отдаёт `{no_material, running, done, stages:[{step_id, number, delay_seconds, count}]}` для экрана
+выбора получателей и блока «🧭 Этапы воронки» в `stats_report.sections()` (поэтому он есть в админке, `/stats` и Excel). Список получателей рассылки
+фиксируется в `engine.prepare` — кто закончил воронку позже, не попадёт. Новый шаг в воронку (`backfill`) возвращает уже закончивших в «в процессе» —
+это не баг. Кнопки: `a:bc:seg:funnel_done|funnel_running`, `a:bc:stages` → `a:bc:stp:<step_id>`. Тесты: `tests/test_funnel_stages.py`.
 
 ## Проверка подписки (26.09.2026)
 

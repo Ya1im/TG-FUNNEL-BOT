@@ -94,6 +94,7 @@ async def collect(deps, now: float | None = None) -> dict:
 
     return {
         "now": now,
+        "stages": await users.funnel_stages(),
         "stats": stats,
         "pending": await deps.funnel.pending_count(),
         "inflow": inflow,
@@ -102,6 +103,20 @@ async def collect(deps, now: float | None = None) -> dict:
         "steps": [dict(s) for s in steps],
         "broadcasts": broadcasts,
     }
+
+
+def _stage_rows(stages: dict) -> list[tuple[str, object]]:
+    """Категории активных людей по этапу воронки: закончившим можно слать рассылки «для прошедших воронку»."""
+    active = stages["no_material"] + stages["running"] + stages["done"]
+    rows: list[tuple[str, object]] = [
+        ("Ещё не получили материал", _share(stages["no_material"], active)),
+        ("В процессе прогрева", _share(stages["running"], active)),
+    ]
+    for stage in stages["stages"]:
+        if stage["count"]:
+            rows.append((f"└ ждут пост {stage['number']} (через {human_delay(stage['delay_seconds'])})", stage["count"]))
+    rows.append(("Закончили воронку", _share(stages["done"], active)))
+    return rows
 
 
 def sections(data: dict) -> list[tuple[str, list[tuple[str, object]]]]:
@@ -119,6 +134,7 @@ def sections(data: dict) -> list[tuple[str, list[tuple[str, object]]]]:
             ("Получили материал", _share(stats["got_material"], total)),
             ("В очереди прогрева", data["pending"]),
         ]),
+        ("🧭 Этапы воронки", _stage_rows(data["stages"])),
         ("📈 Приток", [
             ("За 24 часа", data["inflow"]["d1"]),
             ("За 7 дней", data["inflow"]["d7"]),

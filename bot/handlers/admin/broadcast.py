@@ -14,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.content import ALBUM_KINDS, ContentBlock, extract_media, source_of
+from bot.repo.funnel import human_delay
 from bot.handlers.admin.common import (
     BroadcastItemEdit,
     BroadcastNew,
@@ -48,7 +49,10 @@ SEGMENTS = [
     ("not_subscribed", "Не подписаны"),
     ("got_material", "Получили материал"),
     ("no_material", "Ещё не получили материал"),
+    ("funnel_done", "✅ Закончили воронку"),
+    ("funnel_running", "🔄 В процессе прогрева"),
 ]
+STEP_SEGMENT = "step"   # «ждут пост N»: segment_value — id шага воронки
 
 HINT = "Соберите сообщения любого формата, поправьте, выберите получателей."
 
@@ -105,6 +109,16 @@ async def broadcast_screen(target, deps) -> None:
     await show(target, text, kb(rows))
 
 
+async def segment_label(deps, row) -> str:
+    """Название получателей рассылки для карточки; для «ждут пост N» номер берётся из текущей воронки."""
+    if row["segment"] != STEP_SEGMENT:
+        return dict(SEGMENTS).get(row["segment"], row["segment"])
+    for stage in (await deps.users.funnel_stages())["stages"]:
+        if str(stage["step_id"]) == str(row["segment_value"]):
+            return f"Ждут пост {stage['number']} (через {human_delay(stage['delay_seconds'])})"
+    return "Ждут поста воронки (шаг удалён)"
+
+
 async def broadcast_card(target, deps, broadcast_id: int, is_owner: bool) -> None:
     row = await deps.broadcasts.get(broadcast_id)
     if row is None:
@@ -113,7 +127,7 @@ async def broadcast_card(target, deps, broadcast_id: int, is_owner: bool) -> Non
     status = row["status"]
     stats = await deps.broadcasts.stats(broadcast_id)
     messages = await deps.broadcasts.messages(broadcast_id)
-    label = dict(SEGMENTS).get(row["segment"], row["segment"])
+    label = await segment_label(deps, row)
     text = (
         f"📨 <b>Рассылка #{broadcast_id}</b> — {STATUS_LABELS.get(status, status)}\n\n"
         f"Сообщений: {len(messages)}\n"
@@ -553,20 +567,57 @@ async def cb_pick_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
     for key, label in SEGMENTS:
         count = await deps.users.segment_count(key)
         rows.append([(f"{label} — {count}", f"a:bc:seg:{key}")])
+    rows.append([("🪜 По шагам воронки", "a:bc:stages")])
     rows.append([("✖️ Отмена", "a:bc")])
-    await show(call, "📤 <b>Кому отправляем?</b>\n\nВыбери сегмент получателей:", kb(rows))
+    await show(
+        call,
+        "📤 <b>Кому отправляем?</b>\n\nВыбери сегмент получателей.\n"
+        "<i>«Закончили воронку» — получили материал и все посты прогрева, ждать им больше нечего. "
+        "Список получателей фиксируется в момент выбора.</i>",
+        kb(rows),
+    )
     await call.answer()
+
+
+@router.callback_query(F.data == "a:bc:stages")
+async def cb_pick_stage(call: CallbackQuery, deps, state: FSMContext) -> None:
+    """Выбор получателей по шагу воронки: кто сейчас ждёт пост N."""
+    if not (await state.get_data()).get("messages"):
+        await call.answer("Черновик потерялся, начни заново", show_alert=True)
+        return
+    stages = (await deps.users.funnel_stages())["stages"]
+    rows = [
+        [(f"Ждут пост {s['number']} (через {human_delay(s['delay_seconds'])}) — {s['count']}", f"a:bc:stp:{s['step_id']}")]
+        for s in stages
+        if s["count"]
+    ]
+    rows.append([("⬅️ К выбору получателей", "a:bc:tosend")])
+    text = "🪜 <b>По шагам воронки</b>\n\nВыбери, кому отправить: тем, кто сейчас ждёт определённый пост прогрева."
+    if len(rows) == 1:
+        text += "\n\nСейчас никто не ждёт постов прогрева."
+    await show(call, text, kb(rows))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("a:bc:stp:"))
+async def cb_stage(call: CallbackQuery, deps, state: FSMContext) -> None:
+    await _create_broadcast(call, deps, state, STEP_SEGMENT, call.data.split(":")[-1])
 
 
 @router.callback_query(F.data.startswith("a:bc:seg:"))
 async def cb_segment(call: CallbackQuery, deps, state: FSMContext) -> None:
-    segment = call.data.split(":")[-1]
+    await _create_broadcast(call, deps, state, call.data.split(":")[-1])
+
+
+async def _create_broadcast(
+    call: CallbackQuery, deps, state: FSMContext, segment: str, segment_value: str | None = None
+) -> None:
     data = await state.get_data()
     messages = data.get("messages") or []
     if not messages:
         await call.answer("Черновик потерялся, начни заново", show_alert=True)
         return
-    broadcast_id, total = await deps.engine.prepare(call.from_user.id, segment, messages)
+    broadcast_id, total = await deps.engine.prepare(call.from_user.id, segment, messages, segment_value)
     await state.clear()
     await broadcast_card(call, deps, broadcast_id, deps.config.is_admin(call.from_user.id))
     await call.answer()
